@@ -1,0 +1,593 @@
+// OpenWRT Change Queue System
+// Manages pending changes and approval workflow
+
+import type { MergeableStore } from "tinybase";
+import { execOpenWRT, type OpenWRTSSHConfig } from "./ssh-commands";
+
+export type ChangeCategory =
+  | "network"
+  | "wireless"
+  | "firewall"
+  | "dhcp"
+  | "sqm"
+  | "packages"
+  | "mesh"
+  | "system";
+
+export type ChangeOperation = "create" | "update" | "delete";
+
+export type ChangeImpact = "low" | "medium" | "high" | "critical";
+
+export type ChangeStatus =
+  | "pending"
+  | "approved"
+  | "executing"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface ChangeRequest {
+  deviceId: string;
+  category: ChangeCategory;
+  operation: ChangeOperation;
+  targetType: string;
+  targetId: string;
+  targetName: string;
+  previousValue: unknown;
+  proposedValue: unknown;
+}
+
+export interface PendingChange {
+  id: string;
+  deviceId: string;
+  category: ChangeCategory;
+  operation: ChangeOperation;
+  targetType: string;
+  targetId: string;
+  targetName: string;
+  previousValue: string; // JSON stringified
+  proposedValue: string; // JSON stringified
+  uciCommands: string; // JSON array
+  sshCommands: string; // JSON array
+  impact: ChangeImpact;
+  requiresReboot: boolean;
+  requiresServiceRestart: string; // JSON array
+  dependencies: string; // JSON array of change IDs
+  status: ChangeStatus;
+  createdBy: string;
+  createdAt: number;
+  reviewedBy: string;
+  reviewedAt: number;
+  reviewNotes: string;
+  executedAt: number;
+  result: string;
+  errorMessage: string;
+  rollbackCommands: string; // JSON array
+}
+
+export interface ExecutionLog {
+  id: string;
+  changeId: string;
+  batchId: string;
+  deviceId: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  executedAt: number;
+  duration: number;
+}
+
+/**
+ * Service class for managing the change queue
+ */
+export class ChangeQueueService {
+  constructor(private store: MergeableStore) {}
+
+  /**
+   * Create a new pending change
+   */
+  async createChange(request: ChangeRequest): Promise<string> {
+    const changeId = crypto.randomUUID();
+
+    // Generate UCI commands based on the change
+    const uciCommands = this.generateUCICommands(request);
+
+    // Assess impact level
+    const impact = this.assessImpact(request);
+
+    // Get affected services
+    const servicesAffected = this.getAffectedServices(request.category);
+
+    // Generate rollback commands
+    const rollbackCommands = this.generateRollbackCommands(request);
+
+    // Check if reboot is required
+    const requiresReboot = this.checkRequiresReboot(request);
+
+    this.store.setRow("pendingChanges", changeId, {
+      id: changeId,
+      deviceId: request.deviceId,
+      category: request.category,
+      operation: request.operation,
+      targetType: request.targetType,
+      targetId: request.targetId,
+      targetName: request.targetName,
+      previousValue: JSON.stringify(request.previousValue),
+      proposedValue: JSON.stringify(request.proposedValue),
+      uciCommands: JSON.stringify(uciCommands),
+      sshCommands: JSON.stringify([]),
+      impact,
+      requiresReboot,
+      requiresServiceRestart: JSON.stringify(servicesAffected),
+      dependencies: JSON.stringify([]),
+      status: "pending",
+      createdBy: "user",
+      createdAt: Date.now(),
+      reviewedBy: "",
+      reviewedAt: 0,
+      reviewNotes: "",
+      executedAt: 0,
+      result: "",
+      errorMessage: "",
+      rollbackCommands: JSON.stringify(rollbackCommands),
+    });
+
+    return changeId;
+  }
+
+  /**
+   * Approve a pending change (triggers auto-execution)
+   */
+  async approveChange(
+    changeId: string,
+    reviewedBy: string,
+    notes?: string
+  ): Promise<{ success: boolean; error?: string }> {
+    const change = this.store.getRow("pendingChanges", changeId) as unknown as PendingChange;
+
+    if (!change || change.status !== "pending") {
+      return { success: false, error: "Change not found or not pending" };
+    }
+
+    // Update status to approved
+    this.store.setPartialRow("pendingChanges", changeId, {
+      status: "approved",
+      reviewedBy,
+      reviewedAt: Date.now(),
+      reviewNotes: notes || "",
+    });
+
+    // Auto-execute on approval
+    return this.executeChange(changeId);
+  }
+
+  /**
+   * Reject a pending change
+   */
+  rejectChange(
+    changeId: string,
+    reviewedBy: string,
+    reason: string
+  ): void {
+    this.store.setPartialRow("pendingChanges", changeId, {
+      status: "cancelled",
+      reviewedBy,
+      reviewedAt: Date.now(),
+      reviewNotes: reason,
+    });
+  }
+
+  /**
+   * Execute an approved change
+   */
+  async executeChange(
+    changeId: string
+  ): Promise<{ success: boolean; error?: string; logs?: ExecutionLog[] }> {
+    const change = this.store.getRow("pendingChanges", changeId) as unknown as PendingChange;
+
+    if (!change) {
+      return { success: false, error: "Change not found" };
+    }
+
+    if (change.status !== "approved") {
+      return { success: false, error: "Change must be approved before execution" };
+    }
+
+    // Get device info
+    const device = this.store.getRow("openwrtDevices", change.deviceId);
+    if (!device) {
+      return { success: false, error: "Device not found" };
+    }
+
+    const sshConfig: OpenWRTSSHConfig = {
+      host: device.tailscaleIp as string,
+      user: "root",
+    };
+
+    // Create pre-execution snapshot
+    await this.createSnapshot(change.deviceId, change.category);
+
+    // Update status to executing
+    this.store.setPartialRow("pendingChanges", changeId, {
+      status: "executing",
+      executedAt: Date.now(),
+    });
+
+    const logs: ExecutionLog[] = [];
+
+    try {
+      const uciCommands = JSON.parse(change.uciCommands) as string[];
+
+      // Execute each command
+      for (const cmd of uciCommands) {
+        const startTime = Date.now();
+        const result = await execOpenWRT(sshConfig, cmd);
+
+        const logId = crypto.randomUUID();
+        const log: ExecutionLog = {
+          id: logId,
+          changeId,
+          batchId: "",
+          deviceId: change.deviceId,
+          command: cmd,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.code,
+          executedAt: startTime,
+          duration: Date.now() - startTime,
+        };
+
+        logs.push(log);
+        this.store.setRow("executionLogs", logId, log as unknown as Record<string, string | number | boolean>);
+
+        if (result.code !== 0) {
+          throw new Error(`Command failed: ${cmd}\n${result.stderr}`);
+        }
+      }
+
+      // Restart affected services
+      const services = JSON.parse(change.requiresServiceRestart) as string[];
+      for (const service of services) {
+        await execOpenWRT(sshConfig, `/etc/init.d/${service} restart`);
+      }
+
+      // Mark as completed
+      this.store.setPartialRow("pendingChanges", changeId, {
+        status: "completed",
+        result: "success",
+      });
+
+      return { success: true, logs };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Unknown error";
+
+      this.store.setPartialRow("pendingChanges", changeId, {
+        status: "failed",
+        result: "error",
+        errorMessage,
+      });
+
+      return { success: false, error: errorMessage, logs };
+    }
+  }
+
+  /**
+   * Rollback a completed change
+   */
+  async rollbackChange(changeId: string): Promise<string> {
+    const change = this.store.getRow("pendingChanges", changeId) as unknown as PendingChange;
+
+    if (!change) {
+      throw new Error("Change not found");
+    }
+
+    // Create a rollback change
+    const rollbackCommands = JSON.parse(change.rollbackCommands) as string[];
+
+    if (rollbackCommands.length === 0) {
+      throw new Error("No rollback commands available");
+    }
+
+    // Create a new change for the rollback
+    const rollbackChangeId = await this.createChange({
+      deviceId: change.deviceId,
+      category: change.category,
+      operation: "update",
+      targetType: change.targetType,
+      targetId: change.targetId,
+      targetName: `Rollback: ${change.targetName}`,
+      previousValue: JSON.parse(change.proposedValue),
+      proposedValue: JSON.parse(change.previousValue),
+    });
+
+    // Override the UCI commands with rollback commands
+    this.store.setPartialRow("pendingChanges", rollbackChangeId, {
+      uciCommands: change.rollbackCommands,
+    });
+
+    return rollbackChangeId;
+  }
+
+  /**
+   * Create a configuration snapshot before making changes
+   */
+  private async createSnapshot(
+    deviceId: string,
+    category: ChangeCategory
+  ): Promise<string> {
+    const snapshotId = crypto.randomUUID();
+
+    const device = this.store.getRow("openwrtDevices", deviceId);
+    if (!device) return snapshotId;
+
+    const sshConfig: OpenWRTSSHConfig = {
+      host: device.tailscaleIp as string,
+      user: "root",
+    };
+
+    try {
+      const result = await execOpenWRT(sshConfig, `uci export ${category}`);
+
+      this.store.setRow("configSnapshots", snapshotId, {
+        id: snapshotId,
+        deviceId,
+        snapshotType: "partial",
+        category,
+        config: result.stdout,
+        description: `Pre-change snapshot for ${category}`,
+        createdAt: Date.now(),
+        createdBy: "system",
+        isAutomatic: true,
+      });
+    } catch {
+      // Snapshot failed, but continue with the change
+      console.error(`Failed to create snapshot for ${category} on ${deviceId}`);
+    }
+
+    return snapshotId;
+  }
+
+  /**
+   * Generate UCI commands for a change request
+   */
+  private generateUCICommands(request: ChangeRequest): string[] {
+    const commands: string[] = [];
+    const proposed = request.proposedValue as Record<string, unknown>;
+
+    switch (request.operation) {
+      case "create":
+        // Generate create commands based on category
+        for (const [key, value] of Object.entries(proposed)) {
+          if (key === "_type") continue;
+          commands.push(
+            `uci set ${request.category}.${request.targetId}.${key}='${value}'`
+          );
+        }
+        break;
+
+      case "update":
+        // Generate update commands
+        for (const [key, value] of Object.entries(proposed)) {
+          commands.push(
+            `uci set ${request.category}.${request.targetId}.${key}='${value}'`
+          );
+        }
+        break;
+
+      case "delete":
+        commands.push(`uci delete ${request.category}.${request.targetId}`);
+        break;
+    }
+
+    // Add commit command
+    commands.push(`uci commit ${request.category}`);
+
+    return commands;
+  }
+
+  /**
+   * Generate rollback commands for a change
+   */
+  private generateRollbackCommands(request: ChangeRequest): string[] {
+    const commands: string[] = [];
+    const previous = request.previousValue as Record<string, unknown>;
+
+    switch (request.operation) {
+      case "create":
+        // Rollback create = delete
+        commands.push(`uci delete ${request.category}.${request.targetId}`);
+        break;
+
+      case "update":
+        // Rollback update = restore previous values
+        for (const [key, value] of Object.entries(previous || {})) {
+          commands.push(
+            `uci set ${request.category}.${request.targetId}.${key}='${value}'`
+          );
+        }
+        break;
+
+      case "delete":
+        // Rollback delete = recreate
+        for (const [key, value] of Object.entries(previous || {})) {
+          if (key === "_type") continue;
+          commands.push(
+            `uci set ${request.category}.${request.targetId}.${key}='${value}'`
+          );
+        }
+        break;
+    }
+
+    commands.push(`uci commit ${request.category}`);
+
+    return commands;
+  }
+
+  /**
+   * Assess the impact level of a change
+   */
+  private assessImpact(request: ChangeRequest): ChangeImpact {
+    // Critical: WAN, firewall zones, system changes
+    if (
+      request.targetId.includes("wan") ||
+      request.targetType === "zone" ||
+      request.category === "system"
+    ) {
+      return "critical";
+    }
+
+    // High: Wireless, firewall rules, packages
+    if (
+      request.category === "wireless" ||
+      request.category === "firewall" ||
+      request.category === "packages"
+    ) {
+      return "high";
+    }
+
+    // Medium: DHCP, SQM, mesh
+    if (
+      request.category === "dhcp" ||
+      request.category === "sqm" ||
+      request.category === "mesh"
+    ) {
+      return "medium";
+    }
+
+    return "low";
+  }
+
+  /**
+   * Get the services that need to be restarted for a category
+   */
+  private getAffectedServices(category: ChangeCategory): string[] {
+    const serviceMap: Record<ChangeCategory, string[]> = {
+      network: ["network"],
+      wireless: ["network"],
+      firewall: ["firewall"],
+      dhcp: ["dnsmasq"],
+      sqm: ["sqm"],
+      packages: [],
+      mesh: ["network"],
+      system: [],
+    };
+
+    return serviceMap[category] || [];
+  }
+
+  /**
+   * Check if a change requires a system reboot
+   */
+  private checkRequiresReboot(request: ChangeRequest): boolean {
+    // Kernel module changes, firmware upgrade
+    if (request.category === "system" && request.targetType === "firmware") {
+      return true;
+    }
+
+    // Some package installations require reboot
+    if (
+      request.category === "packages" &&
+      request.operation === "create" &&
+      (request.targetName.includes("kmod-") ||
+        request.targetName.includes("kernel"))
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Get pending changes for a device
+   */
+  getPendingChanges(deviceId?: string): PendingChange[] {
+    const changeIds = this.store.getRowIds("pendingChanges");
+    const changes: PendingChange[] = [];
+
+    for (const id of changeIds) {
+      const change = this.store.getRow("pendingChanges", id) as unknown as PendingChange;
+      if (change.status === "pending") {
+        if (!deviceId || change.deviceId === deviceId) {
+          changes.push(change);
+        }
+      }
+    }
+
+    return changes.sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  /**
+   * Get change history
+   */
+  getChangeHistory(
+    deviceId?: string,
+    limit = 50
+  ): PendingChange[] {
+    const changeIds = this.store.getRowIds("pendingChanges");
+    const changes: PendingChange[] = [];
+
+    for (const id of changeIds) {
+      const change = this.store.getRow("pendingChanges", id) as unknown as PendingChange;
+      if (change.status !== "pending") {
+        if (!deviceId || change.deviceId === deviceId) {
+          changes.push(change);
+        }
+      }
+    }
+
+    return changes
+      .sort((a, b) => b.executedAt - a.executedAt)
+      .slice(0, limit);
+  }
+}
+
+/**
+ * Generate a human-readable diff for display
+ */
+export function generateChangeDiff(change: PendingChange): {
+  changes: Array<{
+    field: string;
+    oldValue: unknown;
+    newValue: unknown;
+    type: "added" | "removed" | "changed";
+  }>;
+  commands: string[];
+  impact: ChangeImpact;
+  servicesAffected: string[];
+} {
+  const prev = JSON.parse(change.previousValue || "{}");
+  const next = JSON.parse(change.proposedValue || "{}");
+
+  const changes: Array<{
+    field: string;
+    oldValue: unknown;
+    newValue: unknown;
+    type: "added" | "removed" | "changed";
+  }> = [];
+
+  const allKeys = new Set([...Object.keys(prev), ...Object.keys(next)]);
+
+  for (const key of allKeys) {
+    if (JSON.stringify(prev[key]) !== JSON.stringify(next[key])) {
+      changes.push({
+        field: key,
+        oldValue: prev[key],
+        newValue: next[key],
+        type:
+          prev[key] === undefined
+            ? "added"
+            : next[key] === undefined
+            ? "removed"
+            : "changed",
+      });
+    }
+  }
+
+  return {
+    changes,
+    commands: JSON.parse(change.uciCommands || "[]"),
+    impact: change.impact,
+    servicesAffected: JSON.parse(change.requiresServiceRestart || "[]"),
+  };
+}
