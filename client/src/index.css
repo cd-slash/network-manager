@@ -1,0 +1,142 @@
+@import "tailwindcss";
+
+@plugin "tailwindcss-animate";
+
+:root {
+  --background: hsl(0 0% 100%);
+  --foreground: hsl(222.2 84% 4.9%);
+  --card: hsl(0 0% 100%);
+  --card-foreground: hsl(222.2 84% 4.9%);
+  --popover: hsl(210 20% 98%);
+  --popover-foreground: hsl(222.2 84% 4.9%);
+  --primary: hsl(222.2 47.4% 11.2%);
+  --primary-foreground: hsl(210 40% 98%);
+  --secondary: hsl(210 40% 96.1%);
+  --secondary-foreground: hsl(222.2 47.4% 11.2%);
+  --muted: hsl(210 40% 96.1%);
+  --muted-foreground: hsl(215.4 16.3% 46.9%);
+  --accent: hsl(210 40% 96.1%);
+  --accent-foreground: hsl(222.2 47.4% 11.2%);
+  --destructive: hsl(0 84.2% 60.2%);
+  --destructive-foreground: hsl(210 40% 98%);
+  --border: hsl(214.3 31.8% 91.4%);
+  --input: hsl(214.3 31.8% 91.4%);
+  --ring: hsl(222.2 84% 4.9%);
+  --radius: 0.125rem;
+}
+
+.dark {
+  --background: hsl(220 13% 9%);
+  --foreground: hsl(220 13% 91%);
+  --card: hsl(220 13% 11%);
+  --card-foreground: hsl(220 13% 91%);
+  --popover: hsl(220 13% 11%);
+  --popover-foreground: hsl(220 13% 91%);
+  --primary: hsl(217 91% 60%);
+  --primary-foreground: hsl(0 0% 100%);
+  --secondary: hsl(220 13% 15%);
+  --secondary-foreground: hsl(220 13% 91%);
+  --muted: hsl(220 13% 15%);
+  --muted-foreground: hsl(220 9% 55%);
+  --accent: hsl(220 13% 15%);
+  --accent-foreground: hsl(220 13% 91%);
+  --destructive: hsl(0 63% 50%);
+  --destructive-foreground: hsl(0 0% 100%);
+  --border: hsl(220 13% 20%);
+  --input: hsl(220 13% 20%);
+  --ring: hsl(217 91% 60%);
+  --success: hsl(142 71% 45%);
+  --success-foreground: hsl(0 0% 100%);
+  --warning: hsl(38 92% 50%);
+  --warning-foreground: hsl(0 0% 100%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+}
+
+.scrollbar-always {
+  overflow-y: scroll !important;
+  overflow-x: auto;
+  scrollbar-gutter: stable;
+}
+
+.scrollbar-always::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.scrollbar-always::-webkit-scrollbar-track {
+  background-color: var(--muted);
+}
+
+.scrollbar-always::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 0;
+  min-height: 40px;
+}
+
+.scrollbar-always::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
+}
+
+.scrollbar-always::-webkit-scrollbar-corner {
+  background-color: var(--muted);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Monaco", "Menlo", "Ubuntu Mono", "Consolas", monospace;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  h1 {
+    font-size: 1.875rem;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+  }
+
+  h3 {
+    font-size: 1.25rem;
+  }
+}
