@@ -23,7 +23,9 @@ export interface UCIConfig {
 export function parseUCIShow(output: string): Record<string, UCIValue> {
   const result: Record<string, UCIValue> = {};
 
-  for (const line of output.split("\n")) {
+  const lines = output.split("\n");
+
+  for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
 
@@ -48,14 +50,26 @@ export function parseUCIShow(output: string): Record<string, UCIValue> {
     let current: UCIValue = result;
     for (let i = 0; i < parts.length - 1; i++) {
       const part = parts[i];
-      if (!current[part]) {
+      if (!current[part] || typeof current[part] === "string") {
+        // Create object if missing or if it was a string (section type declaration)
         current[part] = {};
       }
       current = current[part] as UCIValue;
     }
 
     const lastPart = parts[parts.length - 1];
-    current[lastPart] = value;
+
+    // If this is a section type declaration (e.g., wireless.radio0=wifi-device)
+    // and the target already exists as an object, store as ".type"
+    if (parts.length === 2 && typeof current[lastPart] === "object") {
+      (current[lastPart] as UCIValue)[".type"] = value;
+    } else if (parts.length === 2 && !current[lastPart]) {
+      // Section declaration - create object with .type
+      current[lastPart] = { ".type": value };
+    } else {
+      // Regular option assignment
+      current[lastPart] = value;
+    }
   }
 
   return result;

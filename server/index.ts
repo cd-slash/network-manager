@@ -177,6 +177,13 @@ const api = new Elysia()
           lastSeen: Date.now(),
         });
 
+        // Refresh all device data (network, wireless, firewall, etc.) in the background
+        if (deviceService) {
+          deviceService.refreshAll({ id, host }).catch((err) => {
+            console.error(`[connect] Background refresh failed for ${id}:`, err);
+          });
+        }
+
         return {
           success: true,
           systemInfo,
@@ -201,24 +208,13 @@ const api = new Elysia()
       const { id } = params;
       const { host } = body;
 
+      if (!deviceService) {
+        return { success: false, error: "Device service not initialized" };
+      }
+
       try {
-        const config = { host, user: "root" };
-
-        // Sync network configuration
-        const networkResult = await execOpenWRT(config, "uci show network");
-        // TODO: Parse and store network interfaces
-
-        // Sync wireless configuration
-        const wirelessResult = await execOpenWRT(config, "uci show wireless");
-        // TODO: Parse and store wireless networks
-
-        // Sync firewall configuration
-        const firewallResult = await execOpenWRT(config, "uci show firewall");
-        // TODO: Parse and store firewall rules
-
-        // Sync DHCP configuration
-        const dhcpResult = await execOpenWRT(config, "cat /tmp/dhcp.leases");
-        // TODO: Parse and store DHCP leases
+        // Use the device service to do a full refresh of all device data
+        await deviceService.refreshAll({ id, host });
 
         store.setPartialRow("openwrtDevices", id, {
           lastConfigSync: Date.now(),
@@ -226,7 +222,7 @@ const api = new Elysia()
 
         return {
           success: true,
-          syncedTables: ["network", "wireless", "firewall", "dhcp"],
+          syncedTables: ["network", "wireless", "firewall", "dhcp", "packages", "services"],
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unknown error";
@@ -1445,6 +1441,18 @@ const api = new Elysia()
       devices[id] = store.getRow("openwrtDevices", id);
     }
 
+    const radioIds = store.getRowIds("wirelessRadios");
+    const radios: Record<string, unknown> = {};
+    for (const id of radioIds) {
+      radios[id] = store.getRow("wirelessRadios", id);
+    }
+
+    const networkIds = store.getRowIds("wirelessNetworks");
+    const networks: Record<string, unknown> = {};
+    for (const id of networkIds) {
+      networks[id] = store.getRow("wirelessNetworks", id);
+    }
+
     const pendingIds = store.getRowIds("pendingChanges");
     const pendingCount = pendingIds.filter(
       (id) => store.getCell("pendingChanges", id, "status") === "pending"
@@ -1453,6 +1461,10 @@ const api = new Elysia()
     return {
       deviceCount: deviceIds.length,
       devices,
+      wirelessRadioCount: radioIds.length,
+      wirelessRadios: radios,
+      wirelessNetworkCount: networkIds.length,
+      wirelessNetworks: networks,
       pendingChanges: pendingCount,
       syncStats: wsServer.getStats(),
     };

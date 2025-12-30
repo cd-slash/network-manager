@@ -127,49 +127,75 @@ export class DeviceService {
    * Refresh wireless radios and clients
    */
   async refreshWireless(device: DeviceConfig): Promise<void> {
+    console.log("[refreshWireless] Starting for device:", device.id);
     const config = this.getSSHConfig(device);
 
     // Get wireless config and status
+    console.log("[refreshWireless] Executing SSH commands...");
     const [configResult, statusResult] = await Promise.all([
       execOpenWRT(config, WirelessCommands.getWirelessConfig),
       execOpenWRT(config, WirelessCommands.getWirelessStatus),
     ]);
+    console.log("[refreshWireless] SSH complete. Config code:", configResult.code, "Status code:", statusResult.code);
 
     if (configResult.code === 0) {
-      const wirelessConfig = parseUCIShow(configResult.stdout);
+      const parsedConfig = parseUCIShow(configResult.stdout);
+      // UCI show returns nested structure: { wireless: { radio0: {...}, radio1: {...} } }
+      const wirelessConfig = (parsedConfig.wireless || {}) as Record<string, unknown>;
+      console.log("[refreshWireless] Parsed config keys:", Object.keys(wirelessConfig));
 
-      // Process radios
+      // Process radios and SSIDs
       for (const [key, value] of Object.entries(wirelessConfig)) {
         if (typeof value === "object" && value !== null && ".type" in value && value[".type"] === "wifi-device") {
           const radioId = `${device.id}_${key}`;
           const radioConfig = value as Record<string, unknown>;
-          this.store.setRow("wirelessRadios", radioId, {
+          const channelStr = String(radioConfig.channel || "auto");
+          const txpowerStr = String(radioConfig.txpower || "auto");
+          const radioRow = {
             deviceId: device.id,
             name: key,
-            type: String(radioConfig.type || ""),
-            channel: String(radioConfig.channel || "auto"),
+            type: String(radioConfig.type || "mac80211"),
+            channel: channelStr === "auto" ? 0 : parseInt(channelStr, 10) || 0,
             htmode: String(radioConfig.htmode || ""),
-            txpower: String(radioConfig.txpower || "auto"),
+            txpower: txpowerStr === "auto" ? 0 : parseInt(txpowerStr, 10) || 0,
             disabled: radioConfig.disabled === "1",
             band: String(radioConfig.band || ""),
-          });
+            updatedAt: Date.now(),
+          };
+          console.log("[refreshWireless] Setting radio:", radioId, radioRow);
+          try {
+            this.store.setRow("wirelessRadios", radioId, radioRow);
+            console.log("[refreshWireless] Radio set successfully:", radioId);
+          } catch (err) {
+            console.error("[refreshWireless] Failed to set radio:", radioId, err);
+            throw err;
+          }
         }
 
         // Process SSIDs
         if (typeof value === "object" && value !== null && ".type" in value && value[".type"] === "wifi-iface") {
           const ssidConfig = value as Record<string, unknown>;
           const ssidId = `${device.id}_${key}`;
-          this.store.setRow("wirelessSSIDs", ssidId, {
+          const ssidRow = {
             deviceId: device.id,
-            name: key,
+            radioName: String(ssidConfig.device || ""),
             ssid: String(ssidConfig.ssid || ""),
-            device: String(ssidConfig.device || ""),
             mode: String(ssidConfig.mode || "ap"),
             encryption: String(ssidConfig.encryption || "none"),
             network: String(ssidConfig.network || ""),
             disabled: ssidConfig.disabled === "1",
             hidden: ssidConfig.hidden === "1",
-          });
+            isolate: ssidConfig.isolate === "1",
+            updatedAt: Date.now(),
+          };
+          console.log("[refreshWireless] Setting SSID:", ssidId, ssidRow);
+          try {
+            this.store.setRow("wirelessNetworks", ssidId, ssidRow);
+            console.log("[refreshWireless] SSID set successfully:", ssidId);
+          } catch (err) {
+            console.error("[refreshWireless] Failed to set SSID:", ssidId, err);
+            throw err;
+          }
         }
       }
     }
@@ -583,19 +609,20 @@ export class DeviceService {
 
   /**
    * Refresh all device data
+   * Note: Running sequentially to avoid overwhelming SSH connection limits on routers
    */
   async refreshAll(device: DeviceConfig): Promise<void> {
     await this.refreshSystemInfo(device);
-    await Promise.all([
-      this.refreshNetworkInterfaces(device),
-      this.refreshWireless(device),
-      this.refreshFirewall(device),
-      this.refreshDHCPLeases(device),
-      this.refreshPackages(device),
-      this.refreshServices(device),
-      this.refreshWireGuard(device),
-      this.refreshOpenVPN(device),
-    ]);
+    // Run critical data first
+    await this.refreshWireless(device);
+    await this.refreshNetworkInterfaces(device);
+    await this.refreshFirewall(device);
+    await this.refreshDHCPLeases(device);
+    // Optional data - don't fail if these error
+    try { await this.refreshPackages(device); } catch (e) { console.error("[DeviceService] refreshPackages failed:", e); }
+    try { await this.refreshServices(device); } catch (e) { console.error("[DeviceService] refreshServices failed:", e); }
+    try { await this.refreshWireGuard(device); } catch (e) { console.error("[DeviceService] refreshWireGuard failed:", e); }
+    try { await this.refreshOpenVPN(device); } catch (e) { console.error("[DeviceService] refreshOpenVPN failed:", e); }
   }
 
   /**
