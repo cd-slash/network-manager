@@ -624,6 +624,630 @@ const api = new Elysia()
   })
 
   // ============================================
+  // VPN Management - WireGuard
+  // ============================================
+
+  .get("/api/openwrt/devices/:id/wireguard/status", async ({ params, query }) => {
+    const host = query.host;
+    if (!host) {
+      return { error: "Host parameter required" };
+    }
+
+    try {
+      // Check if WireGuard is installed
+      const installed = await execOpenWRT(
+        { host, user: "root" },
+        "opkg list-installed | grep -q wireguard && echo 'yes' || echo 'no'"
+      );
+
+      if (installed.stdout.trim() !== "yes") {
+        return { installed: false, interfaces: [] };
+      }
+
+      // Get all WireGuard status
+      const status = await execOpenWRT(
+        { host, user: "root" },
+        "wg show all dump"
+      );
+
+      // Parse the dump output
+      const interfaces: Record<string, unknown> = {};
+      let currentIface = "";
+
+      for (const line of status.stdout.split("\n")) {
+        if (!line.trim()) continue;
+        const parts = line.split("\t");
+
+        if (parts.length === 4) {
+          // Interface line
+          currentIface = line.split("\t")[0] || "wg0";
+          interfaces[currentIface] = {
+            privateKey: "(hidden)",
+            publicKey: parts[1],
+            listenPort: parseInt(parts[2], 10) || 0,
+            peers: [],
+          };
+        } else if (parts.length >= 8 && currentIface) {
+          // Peer line
+          const iface = interfaces[currentIface] as { peers: unknown[] };
+          iface.peers.push({
+            publicKey: parts[0],
+            endpoint: parts[2] !== "(none)" ? parts[2] : "",
+            allowedIps: parts[3].split(","),
+            latestHandshake: parseInt(parts[4], 10) * 1000 || 0,
+            transferRx: parseInt(parts[5], 10) || 0,
+            transferTx: parseInt(parts[6], 10) || 0,
+            persistentKeepalive: parseInt(parts[7], 10) || 0,
+          });
+        }
+      }
+
+      return { installed: true, interfaces };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Unknown error" };
+    }
+  })
+
+  .post(
+    "/api/openwrt/devices/:id/wireguard/peers",
+    async ({ params, body }) => {
+      if (!changeQueue) {
+        return { success: false, error: "Change queue not initialized" };
+      }
+
+      // Queue the peer addition
+      const changeId = changeQueue.queueChange({
+        deviceId: params.id,
+        changeType: "wireguard_add_peer",
+        tableName: "wireguardPeers",
+        previousValue: null,
+        proposedValue: body,
+        description: `Add WireGuard peer ${body.publicKey?.slice(0, 8)}...`,
+      });
+
+      return { success: true, changeId };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        interface: t.String(),
+        publicKey: t.String(),
+        presharedKey: t.Optional(t.String()),
+        endpoint: t.Optional(t.String()),
+        allowedIps: t.Array(t.String()),
+        persistentKeepalive: t.Optional(t.Number()),
+      }),
+    }
+  )
+
+  .delete("/api/openwrt/devices/:id/wireguard/peers/:peerId", async ({ params }) => {
+    if (!changeQueue) {
+      return { success: false, error: "Change queue not initialized" };
+    }
+
+    const peer = store.getRow("wireguardPeers", params.peerId);
+    if (!peer) {
+      return { success: false, error: "Peer not found" };
+    }
+
+    const changeId = changeQueue.queueChange({
+      deviceId: params.id,
+      changeType: "wireguard_delete_peer",
+      tableName: "wireguardPeers",
+      rowId: params.peerId,
+      previousValue: peer,
+      proposedValue: null,
+      description: `Delete WireGuard peer`,
+    });
+
+    return { success: true, changeId };
+  })
+
+  // ============================================
+  // VPN Management - OpenVPN
+  // ============================================
+
+  .get("/api/openwrt/devices/:id/openvpn/status", async ({ params, query }) => {
+    const host = query.host;
+    if (!host) {
+      return { error: "Host parameter required" };
+    }
+
+    try {
+      // Check if OpenVPN is installed
+      const installed = await execOpenWRT(
+        { host, user: "root" },
+        "opkg list-installed | grep -q '^openvpn' && echo 'yes' || echo 'no'"
+      );
+
+      if (installed.stdout.trim() !== "yes") {
+        return { installed: false, instances: [] };
+      }
+
+      // Get OpenVPN instances from UCI
+      const config = await execOpenWRT(
+        { host, user: "root" },
+        "uci show openvpn 2>/dev/null || echo ''"
+      );
+
+      // Get running instances
+      const running = await execOpenWRT(
+        { host, user: "root" },
+        "pgrep -la openvpn 2>/dev/null || echo ''"
+      );
+
+      const instances: Array<{
+        name: string;
+        enabled: boolean;
+        running: boolean;
+        mode: string;
+        port: number;
+        proto: string;
+      }> = [];
+
+      // Parse UCI config
+      const instanceNames = new Set<string>();
+      for (const line of config.stdout.split("\n")) {
+        const match = line.match(/^openvpn\.(\w+)=openvpn/);
+        if (match) {
+          instanceNames.add(match[1]);
+        }
+      }
+
+      for (const name of instanceNames) {
+        const enabledMatch = config.stdout.match(
+          new RegExp(`openvpn\\.${name}\\.enabled='?(\\d)'?`)
+        );
+        const modeMatch = config.stdout.match(
+          new RegExp(`openvpn\\.${name}\\.(client|server)=`)
+        );
+        const portMatch = config.stdout.match(
+          new RegExp(`openvpn\\.${name}\\.port='?(\\d+)'?`)
+        );
+        const protoMatch = config.stdout.match(
+          new RegExp(`openvpn\\.${name}\\.proto='?(\\w+)'?`)
+        );
+
+        instances.push({
+          name,
+          enabled: enabledMatch ? enabledMatch[1] === "1" : false,
+          running: running.stdout.includes(name),
+          mode: modeMatch ? modeMatch[1] : "client",
+          port: portMatch ? parseInt(portMatch[1], 10) : 1194,
+          proto: protoMatch ? protoMatch[1] : "udp",
+        });
+      }
+
+      return { installed: true, instances };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Unknown error" };
+    }
+  })
+
+  .post(
+    "/api/openwrt/devices/:id/openvpn/:name",
+    async ({ params, body }) => {
+      const host = body.host;
+      if (!host) {
+        return { error: "Host parameter required" };
+      }
+
+      const action = body.action;
+      if (!["start", "stop", "restart"].includes(action)) {
+        return { error: "Invalid action" };
+      }
+
+      if (!changeQueue) {
+        return { success: false, error: "Change queue not initialized" };
+      }
+
+      const changeId = changeQueue.queueChange({
+        deviceId: params.id,
+        changeType: `openvpn_${action}`,
+        tableName: "openvpnInstances",
+        previousValue: { name: params.name },
+        proposedValue: { name: params.name, action },
+        description: `${action.charAt(0).toUpperCase() + action.slice(1)} OpenVPN instance ${params.name}`,
+      });
+
+      return { success: true, changeId };
+    },
+    {
+      params: t.Object({ id: t.String(), name: t.String() }),
+      body: t.Object({
+        host: t.Optional(t.String()),
+        action: t.String(),
+      }),
+    }
+  )
+
+  .post(
+    "/api/openwrt/devices/:id/openvpn",
+    async ({ params, body }) => {
+      if (!changeQueue) {
+        return { success: false, error: "Change queue not initialized" };
+      }
+
+      const changeId = changeQueue.queueChange({
+        deviceId: params.id,
+        changeType: "openvpn_create",
+        tableName: "openvpnInstances",
+        previousValue: null,
+        proposedValue: body,
+        description: `Create OpenVPN ${body.mode} instance ${body.name}`,
+      });
+
+      return { success: true, changeId };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        name: t.String(),
+        mode: t.String(),
+        protocol: t.String(),
+        port: t.Number(),
+        device: t.String(),
+        remote: t.Optional(t.String()),
+        cipher: t.Optional(t.String()),
+        auth: t.Optional(t.String()),
+        ca: t.Optional(t.String()),
+        cert: t.Optional(t.String()),
+        key: t.Optional(t.String()),
+        enabled: t.Boolean(),
+      }),
+    }
+  )
+
+  .delete("/api/openwrt/devices/:id/openvpn/:name", async ({ params }) => {
+    if (!changeQueue) {
+      return { success: false, error: "Change queue not initialized" };
+    }
+
+    const changeId = changeQueue.queueChange({
+      deviceId: params.id,
+      changeType: "openvpn_delete",
+      tableName: "openvpnInstances",
+      previousValue: { name: params.name },
+      proposedValue: null,
+      description: `Delete OpenVPN instance ${params.name}`,
+    });
+
+    return { success: true, changeId };
+  })
+
+  // ============================================
+  // Backup Management
+  // ============================================
+
+  .get("/api/openwrt/devices/:id/backups", async ({ params, query }) => {
+    const host = query.host;
+    if (!host) {
+      return { error: "Host parameter required" };
+    }
+
+    try {
+      const result = await execOpenWRT(
+        { host, user: "root" },
+        "ls -la /tmp/backup-*.tar.gz 2>/dev/null || echo ''"
+      );
+
+      const backups: Array<{
+        filename: string;
+        size: number;
+        path: string;
+        createdAt: number;
+      }> = [];
+
+      for (const line of result.stdout.split("\n")) {
+        if (!line.includes("backup-")) continue;
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 9) {
+          const path = parts[parts.length - 1];
+          const filename = path.split("/").pop() || "";
+          // Extract timestamp from filename like backup-20241230-120000.tar.gz
+          const match = filename.match(/backup-(\d{8})-(\d{6})/);
+          let createdAt = Date.now();
+          if (match) {
+            const dateStr = match[1];
+            const timeStr = match[2];
+            createdAt = new Date(
+              `${dateStr.slice(0, 4)}-${dateStr.slice(4, 6)}-${dateStr.slice(6, 8)}T${timeStr.slice(0, 2)}:${timeStr.slice(2, 4)}:${timeStr.slice(4, 6)}`
+            ).getTime();
+          }
+
+          backups.push({
+            filename,
+            size: parseInt(parts[4], 10) || 0,
+            path,
+            createdAt,
+          });
+        }
+      }
+
+      return { backups };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Unknown error" };
+    }
+  })
+
+  .post(
+    "/api/openwrt/devices/:id/backups",
+    async ({ params, body }) => {
+      if (!changeQueue) {
+        return { success: false, error: "Change queue not initialized" };
+      }
+
+      const changeId = changeQueue.queueChange({
+        deviceId: params.id,
+        changeType: "backup_create",
+        tableName: "configBackups",
+        previousValue: null,
+        proposedValue: body,
+        description: `Create ${body.type} backup${body.description ? `: ${body.description}` : ""}`,
+      });
+
+      return { success: true, changeId };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        type: t.String(),
+        description: t.Optional(t.String()),
+        includePackages: t.Optional(t.Boolean()),
+      }),
+    }
+  )
+
+  .post("/api/openwrt/devices/:id/backups/:backupId/restore", async ({ params }) => {
+    if (!changeQueue) {
+      return { success: false, error: "Change queue not initialized" };
+    }
+
+    const backup = store.getRow("configBackups", params.backupId);
+    if (!backup) {
+      return { success: false, error: "Backup not found" };
+    }
+
+    const changeId = changeQueue.queueChange({
+      deviceId: params.id,
+      changeType: "backup_restore",
+      tableName: "configBackups",
+      previousValue: null,
+      proposedValue: { backupId: params.backupId, path: backup.path },
+      description: `Restore configuration from backup`,
+    });
+
+    return { success: true, changeId };
+  })
+
+  .delete("/api/openwrt/devices/:id/backups/:backupId", async ({ params, query }) => {
+    const host = query.host;
+    if (!host) {
+      return { error: "Host parameter required" };
+    }
+
+    const backup = store.getRow("configBackups", params.backupId);
+    if (!backup) {
+      return { success: false, error: "Backup not found" };
+    }
+
+    try {
+      await execOpenWRT(
+        { host, user: "root" },
+        `rm -f ${backup.path}`
+      );
+
+      store.delRow("configBackups", params.backupId);
+      return { success: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : "Unknown error" };
+    }
+  })
+
+  // ============================================
+  // System Services Management
+  // ============================================
+
+  .post(
+    "/api/openwrt/devices/:id/services/:name",
+    async ({ params, body }) => {
+      if (!changeQueue) {
+        return { success: false, error: "Change queue not initialized" };
+      }
+
+      const action = body.action;
+      if (!["start", "stop", "restart", "enable", "disable"].includes(action)) {
+        return { error: "Invalid action" };
+      }
+
+      const changeId = changeQueue.queueChange({
+        deviceId: params.id,
+        changeType: `service_${action}`,
+        tableName: "systemServices",
+        previousValue: { name: params.name },
+        proposedValue: { name: params.name, action },
+        description: `${action.charAt(0).toUpperCase() + action.slice(1)} service ${params.name}`,
+      });
+
+      return { success: true, changeId };
+    },
+    {
+      params: t.Object({ id: t.String(), name: t.String() }),
+      body: t.Object({
+        action: t.String(),
+      }),
+    }
+  )
+
+  // ============================================
+  // Package Management (Enhanced)
+  // ============================================
+
+  .post(
+    "/api/openwrt/devices/:id/packages",
+    async ({ params, body }) => {
+      if (!changeQueue) {
+        return { success: false, error: "Change queue not initialized" };
+      }
+
+      const action = body.action;
+      if (!["install", "upgrade", "remove"].includes(action)) {
+        return { error: "Invalid action" };
+      }
+
+      const changeId = changeQueue.queueChange({
+        deviceId: params.id,
+        changeType: `package_${action}`,
+        tableName: "packages",
+        previousValue: null,
+        proposedValue: { package: body.package, action },
+        description: `${action.charAt(0).toUpperCase() + action.slice(1)} package ${body.package}`,
+      });
+
+      return { success: true, changeId };
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        action: t.String(),
+        package: t.String(),
+      }),
+    }
+  )
+
+  .delete("/api/openwrt/devices/:id/packages/:name", async ({ params }) => {
+    if (!changeQueue) {
+      return { success: false, error: "Change queue not initialized" };
+    }
+
+    const changeId = changeQueue.queueChange({
+      deviceId: params.id,
+      changeType: "package_remove",
+      tableName: "packages",
+      previousValue: { name: params.name },
+      proposedValue: null,
+      description: `Remove package ${params.name}`,
+    });
+
+    return { success: true, changeId };
+  })
+
+  .post(
+    "/api/openwrt/devices/:id/packages/update",
+    async ({ params, body }) => {
+      const host = body.host;
+      if (!host) {
+        return { error: "Host parameter required" };
+      }
+
+      try {
+        await execOpenWRT(
+          { host, user: "root" },
+          "opkg update"
+        );
+
+        return { success: true };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        host: t.String(),
+      }),
+    }
+  )
+
+  // ============================================
+  // Logs Management (Enhanced)
+  // ============================================
+
+  .post(
+    "/api/openwrt/devices/:id/logs/refresh",
+    async ({ params, body }) => {
+      const host = body.host;
+      if (!host) {
+        return { error: "Host parameter required" };
+      }
+
+      try {
+        const result = await execOpenWRT(
+          { host, user: "root" },
+          "logread -l 500"
+        );
+
+        // Parse and store logs
+        const logs = result.stdout.split("\n").filter((l) => l.trim());
+        let index = 0;
+
+        for (const line of logs) {
+          // Parse syslog format: "Mon Dec 30 12:00:00 2024 daemon.info service[123]: message"
+          const match = line.match(
+            /^(\w+\s+\w+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+(\w+)\.(\w+)\s+([^:]+):\s*(.*)$/
+          );
+
+          if (match) {
+            const logId = `${params.id}-log-${Date.now()}-${index++}`;
+            store.setRow("systemLogs", logId, {
+              deviceId: params.id,
+              timestamp: new Date(match[1]).getTime() || Date.now(),
+              facility: match[2],
+              severity: match[3],
+              process: match[4],
+              message: match[5],
+            });
+          }
+        }
+
+        return { success: true, count: index };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      body: t.Object({
+        host: t.String(),
+      }),
+    }
+  )
+
+  .delete(
+    "/api/openwrt/devices/:id/logs",
+    async ({ params, query }) => {
+      const host = query.host;
+      if (!host) {
+        // Just clear local store
+        const logIds = store.getRowIds("systemLogs");
+        for (const id of logIds) {
+          const log = store.getRow("systemLogs", id);
+          if (log?.deviceId === params.id) {
+            store.delRow("systemLogs", id);
+          }
+        }
+        return { success: true };
+      }
+
+      try {
+        // Clear logs on device
+        await execOpenWRT(
+          { host, user: "root" },
+          "logread -f &>/dev/null & sleep 0.1; killall logread; > /var/log/messages"
+        );
+
+        return { success: true };
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      query: t.Object({ host: t.Optional(t.String()) }),
+    }
+  )
+
+  // ============================================
   // Debug Endpoint
   // ============================================
 

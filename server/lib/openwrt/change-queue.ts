@@ -518,6 +518,82 @@ export class ChangeQueueService {
   }
 
   /**
+   * Simple queue change method for API routes
+   */
+  queueChange(params: {
+    deviceId: string;
+    changeType: string;
+    tableName: string;
+    rowId?: string;
+    previousValue: unknown;
+    proposedValue: unknown;
+    description: string;
+  }): string {
+    const changeId = crypto.randomUUID();
+
+    // Map changeType to category
+    const categoryMap: Record<string, ChangeCategory> = {
+      wireguard_add_peer: "network",
+      wireguard_delete_peer: "network",
+      openvpn_start: "network",
+      openvpn_stop: "network",
+      openvpn_restart: "network",
+      openvpn_create: "network",
+      openvpn_delete: "network",
+      backup_create: "system",
+      backup_restore: "system",
+      service_start: "system",
+      service_stop: "system",
+      service_restart: "system",
+      service_enable: "system",
+      service_disable: "system",
+      package_install: "packages",
+      package_upgrade: "packages",
+      package_remove: "packages",
+    };
+
+    const category = categoryMap[params.changeType] || "system";
+
+    // Map changeType to operation
+    let operation: ChangeOperation = "update";
+    if (params.changeType.includes("create") || params.changeType.includes("add") || params.changeType.includes("install")) {
+      operation = "create";
+    } else if (params.changeType.includes("delete") || params.changeType.includes("remove")) {
+      operation = "delete";
+    }
+
+    this.store.setRow("pendingChanges", changeId, {
+      id: changeId,
+      deviceId: params.deviceId,
+      category,
+      operation,
+      targetType: params.tableName,
+      targetId: params.rowId || changeId,
+      targetName: params.description,
+      previousValue: JSON.stringify(params.previousValue),
+      proposedValue: JSON.stringify(params.proposedValue),
+      uciCommands: JSON.stringify([]),
+      sshCommands: JSON.stringify([]),
+      impact: "medium",
+      requiresReboot: false,
+      requiresServiceRestart: JSON.stringify([]),
+      dependencies: JSON.stringify([]),
+      status: "pending",
+      createdBy: "user",
+      createdAt: Date.now(),
+      reviewedBy: "",
+      reviewedAt: 0,
+      reviewNotes: "",
+      executedAt: 0,
+      result: "",
+      errorMessage: "",
+      rollbackCommands: JSON.stringify([]),
+    });
+
+    return changeId;
+  }
+
+  /**
    * Get change history
    */
   getChangeHistory(

@@ -15,3 +15,4 @@ export * as PackageCommands from "./commands/packages";
 export * as SQMCommands from "./commands/sqm";
 export * as MeshCommands from "./commands/mesh";
 export * as BackupCommands from "./commands/backup";
+export * as VPNCommands from "./commands/vpn";
