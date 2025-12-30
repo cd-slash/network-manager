@@ -202,7 +202,7 @@ cd client && npm run dev
 
 ## Technology Stack
 
-- **Frontend**: React 18, Vite, TailwindCSS, shadcn/ui, React Flow
+- **Frontend**: React 19, Vite, TailwindCSS, shadcn/ui, React Flow
 - **Backend**: Node.js, Elysia.js, WebSocket
 - **State Management**: TinyBase (CRDT MergeableStore)
 - **Styling**: TailwindCSS with dark mode
