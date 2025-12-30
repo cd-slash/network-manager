@@ -1155,10 +1155,16 @@ const api = new Elysia()
       }
 
       try {
+        // Run opkg update to refresh package lists on the device
         await execOpenWRT(
           { host, user: "root" },
           "opkg update"
         );
+
+        // Refresh packages in our store (fetch installed + upgradable)
+        if (deviceService) {
+          await deviceService.refreshPackages({ id: params.id, host });
+        }
 
         return { success: true };
       } catch (err) {

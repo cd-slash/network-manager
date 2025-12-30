@@ -15,7 +15,7 @@ import { NetworkCommands, parseNetworkInterfaces } from "./commands/network";
 import { WirelessCommands } from "./commands/wireless";
 import { FirewallCommands } from "./commands/firewall";
 import { DHCPCommands } from "./commands/dhcp";
-import { PackageCommands, parseInstalledPackages, parseAvailablePackages } from "./commands/packages";
+import { PackageCommands, parseInstalledPackages, parseAvailablePackages, parseUpgradablePackages } from "./commands/packages";
 import { SQMCommands } from "./commands/sqm";
 import { MeshCommands } from "./commands/mesh";
 import { BackupCommands, parseBackupList, parseReleaseInfo } from "./commands/backup";
@@ -328,29 +328,53 @@ export class DeviceService {
   }
 
   /**
-   * Refresh installed packages
+   * Refresh installed packages and check for upgrades
    */
   async refreshPackages(device: DeviceConfig): Promise<void> {
     const config = this.getSSHConfig(device);
 
-    const result = await execOpenWRT(config, PackageCommands.listInstalled);
-    if (result.code !== 0) {
-      throw new Error(`Failed to get packages: ${result.stderr}`);
+    // Fetch installed packages
+    const installedResult = await execOpenWRT(config, PackageCommands.listInstalled);
+    if (installedResult.code !== 0) {
+      throw new Error(`Failed to get packages: ${installedResult.stderr}`);
     }
 
-    const packages = parseInstalledPackages(result.stdout);
+    const installedPackages = parseInstalledPackages(installedResult.stdout);
 
-    // Clear existing packages for this device
-    const existingIds = this.store.getRowIds("installedPackages").filter(
+    // Fetch upgradable packages
+    const upgradableResult = await execOpenWRT(config, PackageCommands.listUpgradable);
+    const upgradablePackages = upgradableResult.code === 0
+      ? parseUpgradablePackages(upgradableResult.stdout)
+      : [];
+
+    // Create a map of upgradable packages for quick lookup
+    const upgradableMap = new Map<string, string>();
+    for (const pkg of upgradablePackages) {
+      upgradableMap.set(pkg.name, pkg.availableVersion);
+    }
+
+    // Clear existing packages for this device (both tables)
+    const existingInstalledIds = this.store.getRowIds("installedPackages").filter(
       (id) => (this.store.getRow("installedPackages", id) as Record<string, unknown>).deviceId === device.id
     );
-    for (const id of existingIds) {
+    for (const id of existingInstalledIds) {
       this.store.delRow("installedPackages", id);
     }
 
-    // Add packages
-    for (const pkg of packages) {
+    const existingPackageIds = this.store.getRowIds("packages").filter(
+      (id) => (this.store.getRow("packages", id) as Record<string, unknown>).deviceId === device.id
+    );
+    for (const id of existingPackageIds) {
+      this.store.delRow("packages", id);
+    }
+
+    // Add packages to both tables
+    for (const pkg of installedPackages) {
       const pkgId = `${device.id}_${pkg.name}`;
+      const newVersion = upgradableMap.get(pkg.name);
+      const isUpgradable = !!newVersion;
+
+      // installedPackages table (legacy, more detailed)
       this.store.setRow("installedPackages", pkgId, {
         deviceId: device.id,
         name: pkg.name,
@@ -358,6 +382,18 @@ export class DeviceService {
         size: 0,
         description: "",
         installed: true,
+      });
+
+      // packages table (for UI with upgrade info)
+      this.store.setRow("packages", pkgId, {
+        deviceId: device.id,
+        name: pkg.name,
+        version: pkg.version,
+        size: 0,
+        description: "",
+        installed: true,
+        upgradable: isUpgradable,
+        newVersion: newVersion || "",
       });
     }
   }

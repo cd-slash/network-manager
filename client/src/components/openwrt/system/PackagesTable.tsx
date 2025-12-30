@@ -1,12 +1,12 @@
 import { useMemo, useState, useCallback } from "react";
 import {
   Package,
-  Download,
   Trash2,
   RefreshCw,
   Loader2,
   Search,
   Plus,
+  ArrowUpCircle,
 } from "lucide-react";
 import { useRowIds, useTable } from "tinybase/ui-react";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -67,6 +67,7 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
   const [installPackage, setInstallPackage] = useState("");
   const [selectedDeviceId, setSelectedDeviceId] = useState(deviceId || "");
   const [isUpdatingList, setIsUpdatingList] = useState(false);
+  const [isUpdatingAll, setIsUpdatingAll] = useState(false);
 
   const queueInstall = useCallback(async (devId: string, pkgName: string) => {
     setUpdatingIds((prev) => new Set(prev).add(`${devId}-${pkgName}`));
@@ -125,20 +126,75 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
     }
   }, []);
 
-  const updatePackageList = useCallback(async (devId: string) => {
+  const updatePackageList = useCallback(async (devId?: string) => {
     setIsUpdatingList(true);
     try {
-      const device = devicesData[devId];
-      const host = (device?.tailscaleIp as string) || "";
-      await fetch(`/api/openwrt/devices/${devId}/packages/update`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host }),
-      });
+      // If a specific device, update just that one
+      // Otherwise update all devices
+      const devicesToUpdate = devId ? [devId] : deviceIds;
+
+      for (const id of devicesToUpdate) {
+        const device = devicesData[id];
+        const host = (device?.tailscaleIp as string) || "";
+        if (!host) continue;
+
+        await fetch(`/api/openwrt/devices/${id}/packages/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ host }),
+        });
+      }
     } finally {
       setIsUpdatingList(false);
     }
-  }, [devicesData]);
+  }, [devicesData, deviceIds]);
+
+  // Get upgradable packages for a specific device or all devices
+  const upgradablePackages = useMemo(() => {
+    const result: PackageRow[] = [];
+    for (const id of packageIds) {
+      const row = packagesData[id] || {};
+      const devId = (row.deviceId as string) || "";
+      if (deviceId && devId !== deviceId) continue;
+      if (!(row.upgradable as boolean)) continue;
+
+      const device = devicesData[devId] || {};
+      result.push({
+        id,
+        deviceId: devId,
+        deviceHostname: (device.hostname as string) || devId,
+        name: (row.name as string) || "",
+        version: (row.version as string) || "",
+        size: (row.size as number) || 0,
+        description: (row.description as string) || "",
+        installed: true,
+        upgradable: true,
+        newVersion: (row.newVersion as string) || "",
+      });
+    }
+    return result;
+  }, [packageIds, packagesData, devicesData, deviceId]);
+
+  const updateAllPackages = useCallback(async () => {
+    if (upgradablePackages.length === 0) return;
+
+    setIsUpdatingAll(true);
+    try {
+      // Queue upgrade for each upgradable package
+      for (const pkg of upgradablePackages) {
+        await fetch(`/api/openwrt/devices/${pkg.deviceId}/packages`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "upgrade",
+            package: pkg.name,
+          }),
+        });
+      }
+    } finally {
+      setIsUpdatingAll(false);
+    }
+  }, [upgradablePackages]);
 
   const handleInstall = useCallback(async () => {
     if (!selectedDeviceId || !installPackage.trim()) return;
@@ -233,17 +289,18 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
         ),
       },
       {
-        accessorKey: "installed",
+        accessorKey: "upgradable",
         header: "Status",
-        size: 120,
+        size: 140,
         cell: ({ row }) => (
           <div className="flex gap-1">
-            <Badge variant={row.original.installed ? "success" : "outline"}>
-              {row.original.installed ? "Installed" : "Available"}
-            </Badge>
-            {row.original.upgradable && (
+            {row.original.upgradable ? (
               <Badge variant="default" className="bg-blue-500">
-                Update
+                Update Available
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="text-muted-foreground">
+                Up to Date
               </Badge>
             )}
           </div>
@@ -261,64 +318,44 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
 
           return (
             <div className="flex gap-1">
-              {row.original.installed ? (
-                <>
-                  {row.original.upgradable && (
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      title="Upgrade package"
-                      onClick={() =>
-                        queueUpgrade(row.original.deviceId, row.original.name)
-                      }
-                      disabled={isUpdating}
-                    >
-                      {isUpdating ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Download className="h-4 w-4 text-blue-500" />
-                      )}
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    title="Remove package"
-                    onClick={() =>
-                      queueRemove(row.original.deviceId, row.original.name)
-                    }
-                    disabled={isUpdating}
-                  >
-                    {isUpdating ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    )}
-                  </Button>
-                </>
-              ) : (
+              {row.original.upgradable && (
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Install package"
+                  title="Upgrade package"
                   onClick={() =>
-                    queueInstall(row.original.deviceId, row.original.name)
+                    queueUpgrade(row.original.deviceId, row.original.name)
                   }
                   disabled={isUpdating}
                 >
                   {isUpdating ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
                   ) : (
-                    <Download className="h-4 w-4 text-green-500" />
+                    <ArrowUpCircle className="h-4 w-4 text-blue-500" />
                   )}
                 </Button>
               )}
+              <Button
+                variant="ghost"
+                size="icon"
+                title="Remove package"
+                onClick={() =>
+                  queueRemove(row.original.deviceId, row.original.name)
+                }
+                disabled={isUpdating}
+              >
+                {isUpdating ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Trash2 className="h-4 w-4 text-destructive" />
+                )}
+              </Button>
             </div>
           );
         },
       },
     ],
-    [deviceId, updatingIds, queueInstall, queueRemove, queueUpgrade]
+    [deviceId, updatingIds, queueRemove, queueUpgrade]
   );
 
   return (
@@ -330,30 +367,43 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
       className="h-full"
       facetedFilters={[
         {
-          column: "installed",
-          title: "Status",
+          column: "upgradable",
+          title: "Updates",
           options: [
-            { label: "Installed", value: "true" },
-            { label: "Available", value: "false" },
+            { label: "Has Updates", value: "true" },
+            { label: "Up to Date", value: "false" },
           ],
         },
       ]}
       globalActions={
         <>
           {globalActions}
-          {deviceId && (
+          <Button
+            variant="outline"
+            className="gap-1"
+            onClick={() => updatePackageList(deviceId)}
+            disabled={isUpdatingList}
+          >
+            {isUpdatingList ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Refresh
+          </Button>
+          {upgradablePackages.length > 0 && (
             <Button
-              variant="outline"
-              className="gap-1"
-              onClick={() => updatePackageList(deviceId)}
-              disabled={isUpdatingList}
+              variant="default"
+              className="gap-1 bg-blue-600 hover:bg-blue-700"
+              onClick={updateAllPackages}
+              disabled={isUpdatingAll}
             >
-              {isUpdatingList ? (
+              {isUpdatingAll ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <RefreshCw className="h-4 w-4" />
+                <ArrowUpCircle className="h-4 w-4" />
               )}
-              Update List
+              Update All ({upgradablePackages.length})
             </Button>
           )}
           <Dialog open={isInstalling} onOpenChange={setIsInstalling}>

@@ -205,7 +205,7 @@ export const createAppStore = () =>
       overhead: { type: "number", default: 44 },
     },
 
-    // Installed Packages
+    // Installed Packages (detailed)
     installedPackages: {
       deviceId: { type: "string" },
       name: { type: "string" },
@@ -214,6 +214,18 @@ export const createAppStore = () =>
       description: { type: "string", default: "" },
       installedTime: { type: "number" },
       autoInstalled: { type: "boolean", default: false },
+    },
+
+    // Packages (with upgrade info for UI)
+    packages: {
+      deviceId: { type: "string" },
+      name: { type: "string" },
+      version: { type: "string" },
+      size: { type: "number", default: 0 },
+      description: { type: "string", default: "" },
+      installed: { type: "boolean", default: true },
+      upgradable: { type: "boolean", default: false },
+      newVersion: { type: "string", default: "" },
     },
 
     // System Services
