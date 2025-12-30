@@ -4,6 +4,9 @@
 export * from "./ssh-commands";
 export * from "./uci-parser";
 export * from "./change-queue";
+export * from "./device-service";
+export * from "./polling-service";
+export * from "./execution-engine";
 
 // Re-export command modules
 export * as SystemCommands from "./commands/system";

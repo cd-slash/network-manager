@@ -12,9 +12,25 @@ export type ChangeCategory =
   | "sqm"
   | "packages"
   | "mesh"
-  | "system";
+  | "system"
+  | "services"
+  | "vpn"
+  | "backup";
 
-export type ChangeOperation = "create" | "update" | "delete";
+export type ChangeOperation =
+  | "create"
+  | "update"
+  | "delete"
+  | "install"
+  | "remove"
+  | "upgrade"
+  | "start"
+  | "stop"
+  | "restart"
+  | "enable"
+  | "disable"
+  | "restore"
+  | "reboot";
 
 export type ChangeImpact = "low" | "medium" | "high" | "critical";
 
@@ -471,6 +487,9 @@ export class ChangeQueueService {
       packages: [],
       mesh: ["network"],
       system: [],
+      services: [],
+      vpn: ["network"],
+      backup: [],
     };
 
     return serviceMap[category] || [];

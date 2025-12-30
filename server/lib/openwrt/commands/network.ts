@@ -6,6 +6,9 @@ export const NetworkCommands = {
   getNetworkConfig: `uci show network`,
   exportNetworkConfig: `uci export network`,
 
+  // Show all interfaces with status
+  showAllInterfaces: `ubus call network.interface dump 2>/dev/null`,
+
   // Interface Status via ubus
   getInterfaceStatus: `ubus call network.interface dump 2>/dev/null`,
   getInterfaceInfo: (iface: string) =>
@@ -209,4 +212,58 @@ export function parseArpTable(output: string): Array<{
   }
 
   return result;
+}
+
+/**
+ * Parse network interfaces from ubus dump
+ */
+export function parseNetworkInterfaces(output: string): Array<{
+  name: string;
+  up: boolean;
+  type: string;
+  proto: string;
+  device: string;
+  ipv4Address?: string;
+  netmask?: string;
+  gateway?: string;
+  macAddress?: string;
+  rxBytes?: number;
+  txBytes?: number;
+}> {
+  try {
+    const data = JSON.parse(output);
+    const interfaces = data.interface || [];
+
+    return interfaces.map((iface: Record<string, unknown>) => {
+      const ipv4 = (iface["ipv4-address"] as Array<{ address: string; mask: number }>) || [];
+      const routes = (iface.route as Array<{ target: string; nexthop: string }>) || [];
+      const stats = iface.statistics as { rx_bytes?: number; tx_bytes?: number } | undefined;
+
+      // Calculate netmask from CIDR
+      const cidr = ipv4[0]?.mask || 24;
+      const netmaskNum = ~((1 << (32 - cidr)) - 1) >>> 0;
+      const netmask = [
+        (netmaskNum >>> 24) & 255,
+        (netmaskNum >>> 16) & 255,
+        (netmaskNum >>> 8) & 255,
+        netmaskNum & 255,
+      ].join(".");
+
+      return {
+        name: String(iface.interface || ""),
+        up: Boolean(iface.up),
+        type: String(iface.proto || "static"),
+        proto: String(iface.proto || "static"),
+        device: String(iface.device || iface.l3_device || ""),
+        ipv4Address: ipv4[0]?.address,
+        netmask: ipv4[0] ? netmask : undefined,
+        gateway: routes.find(r => r.target === "0.0.0.0")?.nexthop,
+        macAddress: iface.macaddr as string | undefined,
+        rxBytes: stats?.rx_bytes,
+        txBytes: stats?.tx_bytes,
+      };
+    });
+  } catch {
+    return [];
+  }
 }

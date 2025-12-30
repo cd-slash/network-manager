@@ -12,6 +12,9 @@ import {
   pingDevice,
 } from "./lib/openwrt/ssh-commands";
 import { ChangeQueueService } from "./lib/openwrt/change-queue";
+import { DeviceService } from "./lib/openwrt/device-service";
+import { PollingService } from "./lib/openwrt/polling-service";
+import { ExecutionEngine } from "./lib/openwrt/execution-engine";
 
 const PORT = 8048;
 
@@ -24,6 +27,9 @@ const store = createMergeableStore();
 
 // Change queue service
 let changeQueue: ChangeQueueService;
+let deviceService: DeviceService;
+let pollingService: PollingService;
+let executionEngine: ExecutionEngine;
 
 wsServer.addClientIdsListener(null, () => {
   const stats = wsServer.getStats();
@@ -45,8 +51,20 @@ async function connectServerStore() {
   await serverSynchronizer.startSync();
   console.log("[sync] Server store connected to sync on path:", SYNC_PATH);
 
-  // Initialize change queue service
-  changeQueue = new ChangeQueueService(store as unknown as import("tinybase").MergeableStore);
+  // Initialize services
+  const mergeableStore = store as unknown as import("tinybase").MergeableStore;
+  changeQueue = new ChangeQueueService(mergeableStore);
+  deviceService = new DeviceService(mergeableStore);
+  pollingService = new PollingService(mergeableStore, {
+    pollInterval: 30000, // 30 seconds
+    fullRefreshInterval: 300000, // 5 minutes
+    pollOnStart: false, // Don't poll immediately, wait for devices to be added
+  });
+  executionEngine = new ExecutionEngine(mergeableStore);
+
+  // Start polling service
+  pollingService.start();
+  console.log("[polling] Polling service started");
 
   // Log store changes for debugging
   store.addRowListener("openwrtDevices", null, (store, tableId, rowId) => {
@@ -1244,6 +1262,175 @@ const api = new Elysia()
     {
       params: t.Object({ id: t.String() }),
       query: t.Object({ host: t.Optional(t.String()) }),
+    }
+  )
+
+  // ============================================
+  // Change Execution
+  // ============================================
+
+  .post(
+    "/api/changes/:id/execute",
+    async ({ params }) => {
+      if (!executionEngine) {
+        return { success: false, error: "Execution engine not initialized" };
+      }
+
+      try {
+        const result = await executionEngine.executeChange(params.id);
+        return result;
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+    }
+  )
+
+  .post(
+    "/api/changes/execute-all",
+    async ({ body }) => {
+      if (!executionEngine) {
+        return { success: false, error: "Execution engine not initialized" };
+      }
+
+      try {
+        const results = await executionEngine.executeApprovedChanges(body.deviceId);
+        return {
+          success: true,
+          results,
+          executed: results.filter((r) => r.success).length,
+          failed: results.filter((r) => !r.success).length,
+        };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      body: t.Object({
+        deviceId: t.Optional(t.String()),
+      }),
+    }
+  )
+
+  // ============================================
+  // Polling Service Control
+  // ============================================
+
+  .get("/api/polling/status", () => {
+    if (!pollingService) {
+      return { error: "Polling service not initialized" };
+    }
+    return pollingService.getStats();
+  })
+
+  .post("/api/polling/start", () => {
+    if (!pollingService) {
+      return { error: "Polling service not initialized" };
+    }
+    pollingService.start();
+    return { success: true };
+  })
+
+  .post("/api/polling/stop", () => {
+    if (!pollingService) {
+      return { error: "Polling service not initialized" };
+    }
+    pollingService.stop();
+    return { success: true };
+  })
+
+  .post(
+    "/api/polling/refresh/:deviceId",
+    async ({ params }) => {
+      if (!pollingService) {
+        return { error: "Polling service not initialized" };
+      }
+
+      try {
+        await pollingService.refreshDevice(params.deviceId);
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ deviceId: t.String() }),
+    }
+  )
+
+  .post("/api/polling/poll-all", async () => {
+    if (!pollingService) {
+      return { error: "Polling service not initialized" };
+    }
+
+    try {
+      await pollingService.pollAll();
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+    }
+  })
+
+  // ============================================
+  // Device Service Direct Access
+  // ============================================
+
+  .post(
+    "/api/openwrt/devices/:id/refresh",
+    async ({ params, query }) => {
+      if (!deviceService) {
+        return { error: "Device service not initialized" };
+      }
+
+      const host = query.host;
+      if (!host) {
+        return { error: "Host parameter required" };
+      }
+
+      try {
+        await deviceService.refreshAll({
+          id: params.id,
+          host,
+        });
+        return { success: true };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      query: t.Object({ host: t.String() }),
+    }
+  )
+
+  .post(
+    "/api/openwrt/devices/:id/execute",
+    async ({ params, body, query }) => {
+      if (!deviceService) {
+        return { error: "Device service not initialized" };
+      }
+
+      const host = query.host;
+      if (!host) {
+        return { error: "Host parameter required" };
+      }
+
+      try {
+        const result = await deviceService.executeCommand(
+          { id: params.id, host },
+          body.command
+        );
+        return result;
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : "Unknown error" };
+      }
+    },
+    {
+      params: t.Object({ id: t.String() }),
+      query: t.Object({ host: t.String() }),
+      body: t.Object({ command: t.String() }),
     }
   )
 
