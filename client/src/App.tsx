@@ -18,6 +18,9 @@ import { InterfacesTable } from "@/components/openwrt/network";
 import { RadiosTable, SSIDsTable, ClientsTable } from "@/components/openwrt/wireless";
 import { ZonesTable, RulesTable, PortForwardsTable } from "@/components/openwrt/firewall";
 import { DHCPLeasesTable, SQMConfigPanel } from "@/components/openwrt/services";
+import { MeshNodesTable } from "@/components/openwrt/mesh";
+import { NetworkTopology } from "@/components/openwrt/topology";
+import { PackagesTable, SystemServicesTable } from "@/components/openwrt/system";
 import { PendingChangesTable, ChangeHistoryTable } from "@/components/openwrt/approval";
 import { Settings } from "@/components/settings";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -113,15 +116,8 @@ function RoutersView() {
 
 function TopologyView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Network Topology</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Interactive network topology visualization coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="h-full min-h-0">
+      <NetworkTopology />
     </div>
   );
 }
@@ -160,15 +156,8 @@ function ClientsView() {
 
 function MeshView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Mesh Network</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">802.11s and batman-adv mesh configuration coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="p-6 h-full min-h-0">
+      <MeshNodesTable />
     </div>
   );
 }
@@ -229,30 +218,16 @@ function QoSView() {
 
 function PackagesView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Packages</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Package installation and management coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="p-6 h-full min-h-0">
+      <PackagesTable />
     </div>
   );
 }
 
 function ServicesView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>System Services</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Service management coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="p-6 h-full min-h-0">
+      <SystemServicesTable />
     </div>
   );
 }
