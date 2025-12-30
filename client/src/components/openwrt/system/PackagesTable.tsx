@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import {
   Package,
   Trash2,
@@ -57,10 +57,50 @@ interface PackagesTableProps {
 }
 
 export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
-  const packageIds = useRowIds("packages");
-  const packagesData = useTable("packages");
+  const rawPackageIds = useRowIds("packages");
+  const rawPackagesData = useTable("packages");
   const devicesData = useTable("openwrtDevices");
   const deviceIds = useRowIds("openwrtDevices");
+
+  // Debounce package data to prevent flickering during rapid updates
+  // Only update displayed data after store has been stable for 500ms when shrinking
+  const [stablePackageIds, setStablePackageIds] = useState<string[]>(rawPackageIds);
+  const [stablePackagesData, setStablePackagesData] = useState(rawPackagesData);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastStableLengthRef = useRef(rawPackageIds.length);
+
+  useEffect(() => {
+    // Clear any pending update
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+
+    // If the data grew or stayed the same, update immediately (feels responsive)
+    // If the data shrank significantly, debounce to avoid flickering during refresh
+    const sizeDiff = rawPackageIds.length - lastStableLengthRef.current;
+    if (sizeDiff >= 0 || rawPackageIds.length === 0) {
+      lastStableLengthRef.current = rawPackageIds.length;
+      setStablePackageIds(rawPackageIds);
+      setStablePackagesData(rawPackagesData);
+    } else {
+      // Data shrank - debounce to wait for refresh to complete
+      debounceRef.current = setTimeout(() => {
+        lastStableLengthRef.current = rawPackageIds.length;
+        setStablePackageIds(rawPackageIds);
+        setStablePackagesData(rawPackagesData);
+      }, 500);
+    }
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
+  }, [rawPackageIds, rawPackagesData]);
+
+  // Use stable data for rendering
+  const packageIds = stablePackageIds;
+  const packagesData = stablePackagesData;
 
   const [updatingIds, setUpdatingIds] = useState<Set<string>>(new Set());
   const [isInstalling, setIsInstalling] = useState(false);

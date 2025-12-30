@@ -98,29 +98,42 @@ export class DeviceService {
 
     const interfaces = parseNetworkInterfaces(result.stdout);
 
-    // Clear existing interfaces for this device
+    // Build set of new interface IDs
+    const newInterfaceIds = new Set<string>();
+    for (const iface of interfaces) {
+      newInterfaceIds.add(`${device.id}_${iface.name}`);
+    }
+
+    // Get existing interface IDs for this device
     const existingIds = this.store.getRowIds("networkInterfaces").filter(
       (id) => (this.store.getRow("networkInterfaces", id) as Record<string, unknown>).deviceId === device.id
     );
-    for (const id of existingIds) {
-      this.store.delRow("networkInterfaces", id);
-    }
 
-    // Add new interfaces
-    for (const iface of interfaces) {
-      const rowId = `${device.id}_${iface.name}`;
-      this.store.setRow("networkInterfaces", rowId, {
-        deviceId: device.id,
-        name: iface.name,
-        type: iface.type || "unknown",
-        ipAddress: iface.ipv4Address || "",
-        netmask: iface.netmask || "",
-        macAddress: iface.macAddress || "",
-        status: iface.up ? "up" : "down",
-        rxBytes: iface.rxBytes || 0,
-        txBytes: iface.txBytes || 0,
-      });
-    }
+    // Use upsert approach: add/update first, then delete only removed ones
+    this.store.transaction(() => {
+      // Add/update interfaces
+      for (const iface of interfaces) {
+        const rowId = `${device.id}_${iface.name}`;
+        this.store.setRow("networkInterfaces", rowId, {
+          deviceId: device.id,
+          name: iface.name,
+          type: iface.type || "unknown",
+          ipAddress: iface.ipv4Address || "",
+          netmask: iface.netmask || "",
+          macAddress: iface.macAddress || "",
+          status: iface.up ? "up" : "down",
+          rxBytes: iface.rxBytes || 0,
+          txBytes: iface.txBytes || 0,
+        });
+      }
+
+      // Delete only interfaces that were removed
+      for (const id of existingIds) {
+        if (!newInterfaceIds.has(id)) {
+          this.store.delRow("networkInterfaces", id);
+        }
+      }
+    });
   }
 
   /**
@@ -353,49 +366,64 @@ export class DeviceService {
       upgradableMap.set(pkg.name, pkg.availableVersion);
     }
 
-    // Clear existing packages for this device (both tables)
+    // Build the set of new package IDs first
+    const newPackageIds = new Set<string>();
+    for (const pkg of installedPackages) {
+      newPackageIds.add(`${device.id}_${pkg.name}`);
+    }
+
+    // Get existing package IDs for this device
     const existingInstalledIds = this.store.getRowIds("installedPackages").filter(
       (id) => (this.store.getRow("installedPackages", id) as Record<string, unknown>).deviceId === device.id
     );
-    for (const id of existingInstalledIds) {
-      this.store.delRow("installedPackages", id);
-    }
-
     const existingPackageIds = this.store.getRowIds("packages").filter(
       (id) => (this.store.getRow("packages", id) as Record<string, unknown>).deviceId === device.id
     );
-    for (const id of existingPackageIds) {
-      this.store.delRow("packages", id);
-    }
 
-    // Add packages to both tables
-    for (const pkg of installedPackages) {
-      const pkgId = `${device.id}_${pkg.name}`;
-      const newVersion = upgradableMap.get(pkg.name);
-      const isUpgradable = !!newVersion;
+    // Use upsert approach: add/update all packages first, then delete only removed ones
+    // This prevents the UI from seeing packages disappear and reappear
+    this.store.transaction(() => {
+      // Add/update packages in both tables
+      for (const pkg of installedPackages) {
+        const pkgId = `${device.id}_${pkg.name}`;
+        const newVersion = upgradableMap.get(pkg.name);
+        const isUpgradable = !!newVersion;
 
-      // installedPackages table (legacy, more detailed)
-      this.store.setRow("installedPackages", pkgId, {
-        deviceId: device.id,
-        name: pkg.name,
-        version: pkg.version,
-        size: 0,
-        description: "",
-        installed: true,
-      });
+        // installedPackages table (legacy, more detailed)
+        this.store.setRow("installedPackages", pkgId, {
+          deviceId: device.id,
+          name: pkg.name,
+          version: pkg.version,
+          size: 0,
+          description: "",
+          installed: true,
+        });
 
-      // packages table (for UI with upgrade info)
-      this.store.setRow("packages", pkgId, {
-        deviceId: device.id,
-        name: pkg.name,
-        version: pkg.version,
-        size: 0,
-        description: "",
-        installed: true,
-        upgradable: isUpgradable,
-        newVersion: newVersion || "",
-      });
-    }
+        // packages table (for UI with upgrade info)
+        this.store.setRow("packages", pkgId, {
+          deviceId: device.id,
+          name: pkg.name,
+          version: pkg.version,
+          size: 0,
+          description: "",
+          installed: true,
+          upgradable: isUpgradable,
+          newVersion: newVersion || "",
+        });
+      }
+
+      // Delete only packages that were removed (not in the new list)
+      for (const id of existingInstalledIds) {
+        if (!newPackageIds.has(id)) {
+          this.store.delRow("installedPackages", id);
+        }
+      }
+      for (const id of existingPackageIds) {
+        if (!newPackageIds.has(id)) {
+          this.store.delRow("packages", id);
+        }
+      }
+    });
   }
 
   /**
