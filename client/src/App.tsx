@@ -21,6 +21,9 @@ import { DHCPLeasesTable, SQMConfigPanel } from "@/components/openwrt/services";
 import { MeshNodesTable } from "@/components/openwrt/mesh";
 import { NetworkTopology } from "@/components/openwrt/topology";
 import { PackagesTable, SystemServicesTable } from "@/components/openwrt/system";
+import { WireGuardPeersTable, OpenVPNTable } from "@/components/openwrt/vpn";
+import { SystemLogsViewer } from "@/components/openwrt/log-viewer";
+import { BackupsManager } from "@/components/openwrt/backups";
 import { PendingChangesTable, ChangeHistoryTable } from "@/components/openwrt/approval";
 import { Settings } from "@/components/settings";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -187,15 +190,19 @@ function FirewallView() {
 
 function VPNView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>VPN Configuration</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">WireGuard and OpenVPN configuration coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="p-6 h-full min-h-0">
+      <Tabs defaultValue="wireguard" className="h-full flex flex-col">
+        <TabsList>
+          <TabsTrigger value="wireguard">WireGuard</TabsTrigger>
+          <TabsTrigger value="openvpn">OpenVPN</TabsTrigger>
+        </TabsList>
+        <TabsContent value="wireguard" className="flex-1 min-h-0">
+          <WireGuardPeersTable />
+        </TabsContent>
+        <TabsContent value="openvpn" className="flex-1 min-h-0">
+          <OpenVPNTable />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -234,30 +241,16 @@ function ServicesView() {
 
 function LogsView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>System Logs</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Log viewer coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="p-6 h-full min-h-0">
+      <SystemLogsViewer />
     </div>
   );
 }
 
 function BackupsView() {
   return (
-    <div className="p-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Configuration Backups</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-muted-foreground">Backup and restore functionality coming soon...</p>
-        </CardContent>
-      </Card>
+    <div className="p-6 h-full min-h-0">
+      <BackupsManager />
     </div>
   );
 }
