@@ -7,6 +7,7 @@ import { DataTable } from "@/components/ui/data-table";
 import { DeviceStatusBadge } from "./DeviceStatusBadge";
 import { Badge } from "@/components/ui/badge";
 import type { DeviceStatus, DeviceRole } from "@/store";
+import { refreshDevice } from "@/lib/api";
 
 interface DeviceRow {
   id: string;
@@ -72,11 +73,9 @@ export function RoutersTable({ globalActions }: RoutersTableProps) {
     setSyncingIds((prev) => new Set(prev).add(id));
 
     try {
-      await fetch(`/api/openwrt/devices/${id}/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host }),
-      });
+      await refreshDevice(id, host);
+    } catch (error) {
+      console.error("Failed to refresh device:", error);
     } finally {
       setSyncingIds((prev) => {
         const next = new Set(prev);
