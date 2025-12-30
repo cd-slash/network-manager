@@ -1,77 +1,220 @@
-# vite-tinybase-ts-react-sync
+# OpenWRT Network Manager
 
-This is a [Vite](https://vitejs.dev/) template for a simple
-[TinyBase](https://tinybase.org/) app, using TypeScript and React, demonstrating
-the TinyBase ui-react-dom module UI components, and also synchronizing between
-disparate browser windows.
+A centralized management dashboard for OpenWRT routers with real-time synchronization, approval workflows, and SSH-based configuration management.
 
-<img width="847" alt="image" src="https://github.com/user-attachments/assets/c63f2789-94dd-4fd3-a5eb-e929c7b4897c">
+## Features
 
-## Instructions
+- **Multi-Router Management**: Manage multiple OpenWRT devices from a single dashboard
+- **Real-time Sync**: CRDT-based synchronization using TinyBase for instant updates across clients
+- **Approval Workflow**: All configuration changes go through an approval queue before execution
+- **Tailscale Integration**: Automatic device discovery via Tailscale API
+- **Comprehensive Management**:
+  - Network interfaces and routing
+  - Wireless radios, SSIDs, and client monitoring
+  - Firewall zones, rules, and port forwards
+  - DHCP leases and static assignments
+  - VPN (WireGuard and OpenVPN)
+  - Package management
+  - System services
+  - Logs and backups
+  - Mesh networking (batman-adv)
+  - QoS/SQM configuration
 
-1. Make a copy of this template into a new directory:
+## Architecture
 
-```sh
-npx tiged tinyplex/vite-tinybase-ts-react-sync my-tinybase-app
+```
+┌─────────────────┐     WebSocket      ┌─────────────────┐
+│   Browser UI    │◄──────────────────►│   Node Server   │
+│   (React/Vite)  │     TinyBase       │   (Elysia.js)   │
+└─────────────────┘     CRDT Sync      └────────┬────────┘
+                                                │
+                                                │ SSH
+                                                ▼
+                                       ┌─────────────────┐
+                                       │  OpenWRT Devices │
+                                       │  (via Tailscale) │
+                                       └─────────────────┘
 ```
 
-2. Go into the client directory:
+### Key Components
 
-```sh
-cd my-tinybase-app/client
+- **TinyBase MergeableStore**: Conflict-free replicated data store synced between all clients and server
+- **Change Queue System**: All modifications create pending changes that require approval
+- **Execution Engine**: Approved changes are executed on devices via SSH
+- **Polling Service**: Automatic periodic status updates from all devices
+
+## Project Structure
+
+```
+├── client/                    # React frontend (Vite)
+│   ├── src/
+│   │   ├── components/
+│   │   │   ├── openwrt/       # Feature components
+│   │   │   │   ├── devices/   # Router management
+│   │   │   │   ├── network/   # Interface config
+│   │   │   │   ├── wireless/  # WiFi management
+│   │   │   │   ├── firewall/  # Firewall rules
+│   │   │   │   ├── vpn/       # WireGuard/OpenVPN
+│   │   │   │   ├── services/  # DHCP, SQM
+│   │   │   │   ├── system/    # Packages, services
+│   │   │   │   ├── mesh/      # Mesh networking
+│   │   │   │   ├── topology/  # Network visualization
+│   │   │   │   ├── log-viewer/# System logs
+│   │   │   │   ├── backups/   # Backup management
+│   │   │   │   └── approval/  # Change approval
+│   │   │   └── ui/            # Shared UI components
+│   │   ├── lib/
+│   │   │   └── api.ts         # API client
+│   │   ├── hooks/
+│   │   │   └── useApi.ts      # API hooks
+│   │   └── store/
+│   │       └── index.ts       # TinyBase store schema
+│   └── package.json
+│
+├── server/                    # Node.js backend
+│   ├── index.ts               # Main server (Elysia + WebSocket)
+│   └── lib/
+│       ├── ssh/               # SSH execution
+│       └── openwrt/           # OpenWRT management
+│           ├── commands/      # SSH command templates
+│           │   ├── system.ts
+│           │   ├── network.ts
+│           │   ├── wireless.ts
+│           │   ├── firewall.ts
+│           │   ├── dhcp.ts
+│           │   ├── packages.ts
+│           │   ├── sqm.ts
+│           │   ├── mesh.ts
+│           │   ├── backup.ts
+│           │   └── vpn.ts
+│           ├── device-service.ts    # Device operations
+│           ├── polling-service.ts   # Status polling
+│           ├── execution-engine.ts  # Change execution
+│           ├── change-queue.ts      # Approval workflow
+│           ├── ssh-commands.ts      # SSH wrapper
+│           └── uci-parser.ts        # UCI config parser
+│
+└── README.md
 ```
 
-3. Install the dependencies:
+## Getting Started
 
-```sh
-npm install
+### Prerequisites
+
+- Node.js 18+
+- OpenWRT devices accessible via SSH
+- Tailscale network (optional, for device discovery)
+
+### Installation
+
+1. Clone the repository:
+```bash
+git clone https://github.com/cd-slash/network-manager.git
+cd network-manager
 ```
 
-4. Run the application:
+2. Install dependencies:
+```bash
+# Client
+cd client && npm install
 
-```sh
-npm run dev
+# Server
+cd ../server && npm install
 ```
 
-5. Go the URL shown and enjoy!
+3. Configure SSH access:
+   - Ensure your SSH key is added to OpenWRT devices
+   - Default user is `root` (standard for OpenWRT)
 
-## Run your own server
+4. Start the server:
+```bash
+cd server && npm run dev
+```
 
-This template uses a lightweight socket server on `vite.tinybase.org` to
-synchronize data between clients. This is fine for a demo but not intended as a
-production server for your apps!
+5. Start the client:
+```bash
+cd client && npm run dev
+```
 
-If you wish to run your own instance, see the `server` directory and start from
-there.
+6. Open http://localhost:5173
 
-The `vite.tinybase.org` server is hosted on fly.io and so if you choose to use
-that, you can reuse the docker and fly configurations in the server directory.
-Just remember to update them to match your machines and required configuration.
+## Usage
 
-You will also have to have your client communicate with the new server by
-configuring the `SERVER` constant at the top of the client's `App.tsx` file.
+### Adding Devices
 
-## Other templates
+1. Navigate to **Routers** in the sidebar
+2. Click **Discover** to find devices via Tailscale API
+3. Or manually add devices using their Tailscale IP
 
-There are eleven templates for TinyBase, of which this is one:
+### Managing Configuration
 
-|     | Template                                                                                                             | Language   | React | Plus                   |
-| --- | -------------------------------------------------------------------------------------------------------------------- | ---------- | ----- | ---------------------- |
-|     | [vite-tinybase](https://github.com/tinyplex/vite-tinybase)                                                           | JavaScript | No    |                        |
-|     | [vite-tinybase-ts](https://github.com/tinyplex/vite-tinybase-ts)                                                     | TypeScript | No    |                        |
-|     | [vite-tinybase-react](https://github.com/tinyplex/vite-tinybase-react)                                               | JavaScript | Yes   |                        |
-|     | [vite-tinybase-ts-react](https://github.com/tinyplex/vite-tinybase-ts-react)                                         | TypeScript | Yes   |                        |
-| 👉  | [vite-tinybase-ts-react-sync](https://github.com/tinyplex/vite-tinybase-ts-react-sync)                               | TypeScript | Yes   | Synchronization        |
-|     | [vite-tinybase-ts-react-sync-durable-object](https://github.com/tinyplex/vite-tinybase-ts-react-sync-durable-object) | TypeScript | Yes   | Sync & Durable Objects |
-|     | [vite-tinybase-ts-react-pglite](https://github.com/tinyplex/vite-tinybase-ts-react-pglite)                           | TypeScript | Yes   | PGlite                 |
-|     | [vite-tinybase-ts-react-crsqlite](https://github.com/tinyplex/vite-tinybase-ts-react-crsqlite)                       | TypeScript | Yes   | CR-SQLite              |
-|     | [tinybase-ts-react-partykit](https://github.com/tinyplex/tinybase-ts-react-partykit)                                 | TypeScript | Yes   | PartyKit               |
-|     | [tinybase-ts-react-electricsql](https://github.com/tinyplex/tinybase-ts-react-electricsql)                           | TypeScript | Yes   | ElectricSQL            |
-|     | [expo/examples/with-tinybase](https://github.com/expo/examples/tree/master/with-tinybase)                            | JavaScript | Yes   | React Native & Expo    |
+1. Make changes through the UI (network, wireless, firewall, etc.)
+2. Changes are queued in the **Approval Queue**
+3. Review and approve changes
+4. Approved changes are executed on devices via SSH
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/openwrt/discover` | POST | Discover devices via Tailscale |
+| `/api/openwrt/devices/:id/status` | GET | Get device status |
+| `/api/openwrt/devices/:id/refresh` | POST | Refresh all device data |
+| `/api/openwrt/devices/:id/network` | GET | Get network interfaces |
+| `/api/openwrt/devices/:id/wireless` | GET | Get wireless status |
+| `/api/openwrt/devices/:id/firewall` | GET | Get firewall config |
+| `/api/openwrt/devices/:id/packages` | GET/POST | Manage packages |
+| `/api/openwrt/devices/:id/services/:name` | POST | Control services |
+| `/api/openwrt/devices/:id/logs` | GET | Get system logs |
+| `/api/openwrt/devices/:id/backups` | GET/POST | Manage backups |
+| `/api/openwrt/devices/:id/wireguard/status` | GET | Get WireGuard status |
+| `/api/openwrt/devices/:id/openvpn/status` | GET | Get OpenVPN status |
+| `/api/changes/:id/execute` | POST | Execute approved change |
+| `/api/changes/execute-all` | POST | Execute all approved changes |
+| `/api/polling/status` | GET | Get polling service status |
+| `/api/polling/start` | POST | Start polling service |
+| `/api/polling/stop` | POST | Stop polling service |
+
+## Data Model
+
+### TinyBase Tables
+
+| Table | Description |
+|-------|-------------|
+| `openwrtDevices` | Registered router devices |
+| `networkInterfaces` | Network interface configurations |
+| `wirelessRadios` | WiFi radio settings |
+| `wirelessSSIDs` | SSID configurations |
+| `wirelessClients` | Connected wireless clients |
+| `firewallZones` | Firewall zone definitions |
+| `firewallRules` | Traffic rules |
+| `portForwards` | Port forwarding rules |
+| `dhcpLeases` | Active DHCP leases |
+| `installedPackages` | Installed packages per device |
+| `systemServices` | System service states |
+| `systemLogs` | Parsed log entries |
+| `pendingChanges` | Changes awaiting approval |
+| `changeHistory` | Executed change history |
+| `wireguardPeers` | WireGuard peer configurations |
+| `openvpnInstances` | OpenVPN instance states |
+| `meshNodes` | Mesh network nodes |
+| `sqmConfigs` | SQM/QoS configurations |
+
+## Technology Stack
+
+- **Frontend**: React 18, Vite, TailwindCSS, shadcn/ui, React Flow
+- **Backend**: Node.js, Elysia.js, WebSocket
+- **State Management**: TinyBase (CRDT MergeableStore)
+- **Styling**: TailwindCSS with dark mode
+- **Icons**: Lucide React
+
+## Security Considerations
+
+- All SSH connections should use key-based authentication
+- Tailscale provides encrypted mesh networking
+- Sensitive data (API keys, SSH keys) should be stored securely
+- The approval workflow prevents accidental misconfigurations
 
 ## License
 
-This template has no license, and so you can use it however you want!
-[TinyBase](https://github.com/tinyplex/tinybase/blob/main/LICENSE) and
-[Vite](https://github.com/vitejs/vite/blob/main/LICENSE) themselves are both MIT
-licensed.
+MIT
