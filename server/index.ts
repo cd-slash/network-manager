@@ -333,6 +333,14 @@ const api = new Elysia()
     return { change };
   })
 
+  .get("/api/openwrt/changes/:id/logs", ({ params }) => {
+    if (!changeQueue) {
+      return { logs: [] };
+    }
+    const logs = changeQueue.getExecutionLogs(params.id);
+    return { logs };
+  })
+
   .post(
     "/api/openwrt/changes/:id/approve",
     async ({ params, body }) => {

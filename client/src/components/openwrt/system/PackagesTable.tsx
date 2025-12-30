@@ -12,7 +12,7 @@ import { useRowIds, useTable } from "tinybase/ui-react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DataTable } from "@/components/ui/data-table";
+import { DataTable, createSelectionColumn } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
@@ -108,6 +108,8 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
   const [selectedDeviceId, setSelectedDeviceId] = useState(deviceId || "");
   const [isUpdatingList, setIsUpdatingList] = useState(false);
   const [isUpdatingAll, setIsUpdatingAll] = useState(false);
+  const [selectedRows, setSelectedRows] = useState<PackageRow[]>([]);
+  const [filteredRows, setFilteredRows] = useState<PackageRow[]>([]);
 
   const queueInstall = useCallback(async (devId: string, pkgName: string) => {
     setUpdatingIds((prev) => new Set(prev).add(`${devId}-${pkgName}`));
@@ -189,39 +191,29 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
     }
   }, [devicesData, deviceIds]);
 
-  // Get upgradable packages for a specific device or all devices
-  const upgradablePackages = useMemo(() => {
-    const result: PackageRow[] = [];
-    for (const id of packageIds) {
-      const row = packagesData[id] || {};
-      const devId = (row.deviceId as string) || "";
-      if (deviceId && devId !== deviceId) continue;
-      if (!(row.upgradable as boolean)) continue;
+  // Handle selection changes from the table
+  const handleSelectionChange = useCallback((selected: PackageRow[], filtered: PackageRow[]) => {
+    setSelectedRows(selected);
+    setFilteredRows(filtered);
+  }, []);
 
-      const device = devicesData[devId] || {};
-      result.push({
-        id,
-        deviceId: devId,
-        deviceHostname: (device.hostname as string) || devId,
-        name: (row.name as string) || "",
-        version: (row.version as string) || "",
-        size: (row.size as number) || 0,
-        description: (row.description as string) || "",
-        installed: true,
-        upgradable: true,
-        newVersion: (row.newVersion as string) || "",
-      });
+  // Get packages to upgrade based on selection or filters
+  const packagesToUpgrade = useMemo(() => {
+    // If rows are selected, use only the selected upgradable packages
+    if (selectedRows.length > 0) {
+      return selectedRows.filter((pkg) => pkg.upgradable);
     }
-    return result;
-  }, [packageIds, packagesData, devicesData, deviceId]);
+    // Otherwise use all filtered upgradable packages
+    return filteredRows.filter((pkg) => pkg.upgradable);
+  }, [selectedRows, filteredRows]);
 
   const updateAllPackages = useCallback(async () => {
-    if (upgradablePackages.length === 0) return;
+    if (packagesToUpgrade.length === 0) return;
 
     setIsUpdatingAll(true);
     try {
       // Queue upgrade for each upgradable package
-      for (const pkg of upgradablePackages) {
+      for (const pkg of packagesToUpgrade) {
         await fetch(`/api/openwrt/devices/${pkg.deviceId}/packages`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -234,7 +226,7 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
     } finally {
       setIsUpdatingAll(false);
     }
-  }, [upgradablePackages]);
+  }, [packagesToUpgrade]);
 
   const handleInstall = useCallback(async () => {
     if (!selectedDeviceId || !installPackage.trim()) return;
@@ -273,6 +265,7 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
 
   const columns = useMemo<ColumnDef<PackageRow>[]>(
     () => [
+      createSelectionColumn<PackageRow>(),
       {
         accessorKey: "name",
         header: "Package",
@@ -332,6 +325,8 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
         accessorKey: "upgradable",
         header: "Status",
         size: 140,
+        // Convert boolean to string for filtering to work with faceted filters
+        accessorFn: (row) => (row.upgradable ? "upgradable" : "current"),
         cell: ({ row }) => (
           <div className="flex gap-1">
             {row.original.upgradable ? (
@@ -405,15 +400,30 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
       filterColumn="name"
       filterPlaceholder="Search packages..."
       className="h-full"
+      onSelectionChange={handleSelectionChange}
+      getRowId={(row) => row.id}
       facetedFilters={[
         {
           column: "upgradable",
           title: "Updates",
           options: [
-            { label: "Has Updates", value: "true" },
-            { label: "Up to Date", value: "false" },
+            { label: "Update Available", value: "upgradable" },
+            { label: "Up to Date", value: "current" },
           ],
         },
+        // Only show device filter when viewing all devices
+        ...(!deviceId
+          ? [
+              {
+                column: "deviceHostname",
+                title: "Device",
+                options: deviceIds.map((id) => ({
+                  label: (devicesData[id]?.hostname as string) || id,
+                  value: (devicesData[id]?.hostname as string) || id,
+                })),
+              },
+            ]
+          : []),
       ]}
       globalActions={
         <>
@@ -431,19 +441,26 @@ export function PackagesTable({ deviceId, globalActions }: PackagesTableProps) {
             )}
             Refresh
           </Button>
-          {upgradablePackages.length > 0 && (
+          {(packagesToUpgrade.length > 0 || selectedRows.length > 0) && (
             <Button
               variant="default"
-              className="gap-1 bg-blue-600 hover:bg-blue-700"
+              className="gap-1 bg-blue-600 hover:bg-blue-700 disabled:opacity-50"
               onClick={updateAllPackages}
-              disabled={isUpdatingAll}
+              disabled={isUpdatingAll || packagesToUpgrade.length === 0}
+              title={
+                selectedRows.length > 0
+                  ? packagesToUpgrade.length > 0
+                    ? `Update ${packagesToUpgrade.length} selected upgradable package(s)`
+                    : "No upgradable packages in selection"
+                  : "Update all filtered packages"
+              }
             >
               {isUpdatingAll ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <ArrowUpCircle className="h-4 w-4" />
               )}
-              Update All ({upgradablePackages.length})
+              {selectedRows.length > 0 ? "Update Selected" : "Update All"} ({packagesToUpgrade.length})
             </Button>
           )}
           <Dialog open={isInstalling} onOpenChange={setIsInstalling}>

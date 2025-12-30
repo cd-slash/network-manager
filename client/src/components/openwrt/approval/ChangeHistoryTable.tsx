@@ -1,17 +1,36 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   CheckCircle,
   XCircle,
   AlertCircle,
   Clock,
   RotateCcw,
+  FileText,
 } from "lucide-react";
 import { useRowIds, useTable } from "tinybase/ui-react";
 import { type ColumnDef } from "@tanstack/react-table";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 import type { ChangeStatus, ChangeImpact, ChangeCategory } from "@/store";
+
+interface ExecutionLog {
+  id: string;
+  changeId: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+  executedAt: number;
+  duration: number;
+}
 
 interface HistoryRow {
   id: string;
@@ -60,6 +79,24 @@ export function ChangeHistoryTable() {
   const changeIds = useRowIds("pendingChanges");
   const changesData = useTable("pendingChanges");
   const devicesData = useTable("openwrtDevices");
+  const [selectedChange, setSelectedChange] = useState<HistoryRow | null>(null);
+  const [logs, setLogs] = useState<ExecutionLog[]>([]);
+  const [logsLoading, setLogsLoading] = useState(false);
+
+  const fetchLogs = async (change: HistoryRow) => {
+    setSelectedChange(change);
+    setLogsLoading(true);
+    try {
+      const response = await fetch(`/api/openwrt/changes/${change.id}/logs`);
+      const data = await response.json();
+      setLogs(data.logs || []);
+    } catch (error) {
+      console.error("Failed to fetch execution logs:", error);
+      setLogs([]);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
 
   const data = useMemo<HistoryRow[]>(() => {
     return changeIds
@@ -177,47 +214,124 @@ export function ChangeHistoryTable() {
       {
         id: "actions",
         header: "Actions",
-        size: 80,
+        size: 140,
         enableHiding: false,
         cell: ({ row }) => {
           if (row.original.status !== "completed" && row.original.status !== "failed") {
             return null;
           }
           return (
-            <Button
-              variant="ghost"
-              size="sm"
-              title="Create rollback"
-              className="gap-1"
-            >
-              <RotateCcw className="h-3 w-3" />
-              Rollback
-            </Button>
+            <div className="flex gap-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                title="View execution logs"
+                className="gap-1"
+                onClick={() => fetchLogs(row.original)}
+              >
+                <FileText className="h-3 w-3" />
+                Logs
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Create rollback"
+                className="gap-1"
+              >
+                <RotateCcw className="h-3 w-3" />
+              </Button>
+            </div>
           );
         },
       },
     ],
-    []
+    [fetchLogs]
   );
 
   return (
-    <DataTable
-      columns={columns}
-      data={data}
-      filterColumn="targetName"
-      filterPlaceholder="Filter by target..."
-      className="h-full"
-      facetedFilters={[
-        {
-          column: "status",
-          title: "Status",
-          options: [
-            { label: "Completed", value: "completed" },
-            { label: "Failed", value: "failed" },
-            { label: "Cancelled", value: "cancelled" },
-          ],
-        },
-      ]}
-    />
+    <>
+      <DataTable
+        columns={columns}
+        data={data}
+        filterColumn="targetName"
+        filterPlaceholder="Filter by target..."
+        className="h-full"
+        facetedFilters={[
+          {
+            column: "status",
+            title: "Status",
+            options: [
+              { label: "Completed", value: "completed" },
+              { label: "Failed", value: "failed" },
+              { label: "Cancelled", value: "cancelled" },
+            ],
+          },
+        ]}
+      />
+
+      <Dialog open={!!selectedChange} onOpenChange={(open) => !open && setSelectedChange(null)}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle>Execution Logs</DialogTitle>
+            <DialogDescription>
+              {selectedChange && (
+                <>
+                  <span className="capitalize">{selectedChange.operation}</span>{" "}
+                  <strong>{selectedChange.targetName}</strong> on{" "}
+                  <strong>{selectedChange.deviceHostname}</strong>
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-auto">
+            {logsLoading ? (
+              <div className="text-center py-4 text-muted-foreground">Loading logs...</div>
+            ) : logs.length === 0 ? (
+              <div className="text-center py-4 text-muted-foreground">
+                No execution logs available for this change.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {logs.map((log) => (
+                  <div key={log.id} className="border rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between text-sm">
+                      <code className="bg-muted px-2 py-1 rounded font-mono text-xs">
+                        {log.command}
+                      </code>
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <span>Exit: {log.exitCode}</span>
+                        <span>{log.duration}ms</span>
+                      </div>
+                    </div>
+                    {log.stdout && (
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-muted-foreground">Output:</div>
+                        <pre className="bg-muted p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
+                          {log.stdout}
+                        </pre>
+                      </div>
+                    )}
+                    {log.stderr && (
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-destructive">Error:</div>
+                        <pre className="bg-destructive/10 text-destructive p-2 rounded text-xs overflow-x-auto whitespace-pre-wrap font-mono max-h-40 overflow-y-auto">
+                          {log.stderr}
+                        </pre>
+                      </div>
+                    )}
+                    {!log.stdout && !log.stderr && (
+                      <div className="text-xs text-muted-foreground italic">
+                        No output
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

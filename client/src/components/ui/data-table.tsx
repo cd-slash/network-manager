@@ -31,7 +31,7 @@ import {
   ChevronRight,
   ChevronDown,
 } from 'lucide-react'
-import { Fragment, useId, useRef, useState } from 'react'
+import { Fragment, useEffect, useId, useRef, useState } from 'react'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -91,6 +91,10 @@ interface DataTableProps<TData, TValue> {
   renderSubComponent?: (props: { row: Row<TData> }) => React.ReactNode
   getRowCanExpand?: (row: Row<TData>) => boolean
   globalActions?: React.ReactNode
+  /** Callback that receives selected rows (if any) or all filtered rows */
+  onSelectionChange?: (selectedRows: TData[], allFilteredRows: TData[]) => void
+  /** Function to get a unique ID for each row (for stable selection) */
+  getRowId?: (row: TData) => string
 }
 
 export function DataTable<TData, TValue>({
@@ -106,6 +110,8 @@ export function DataTable<TData, TValue>({
   renderSubComponent,
   getRowCanExpand,
   globalActions,
+  onSelectionChange,
+  getRowId,
 }: DataTableProps<TData, TValue>) {
   const id = useId()
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([])
@@ -137,6 +143,7 @@ export function DataTable<TData, TValue>({
     onRowSelectionChange: setRowSelection,
     onExpandedChange: setExpanded,
     getRowCanExpand: getRowCanExpand ?? (renderSubComponent ? () => true : () => false),
+    getRowId: getRowId,
     state: {
       columnFilters,
       columnVisibility,
@@ -154,6 +161,20 @@ export function DataTable<TData, TValue>({
     }
     table.resetRowSelection()
   }
+
+  // Compute selected and filtered rows and notify parent
+  // We use JSON.stringify of rowSelection keys to create a stable dependency
+  const selectionKey = Object.keys(rowSelection).sort().join(',')
+  const filterKey = JSON.stringify(columnFilters)
+
+  useEffect(() => {
+    if (onSelectionChange) {
+      const selected = table.getFilteredSelectedRowModel().rows.map((row) => row.original)
+      const filtered = table.getFilteredRowModel().rows.map((row) => row.original)
+      onSelectionChange(selected, filtered)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectionKey, filterKey, data.length, onSelectionChange])
 
   return (
     <div className={cn('flex h-full min-h-0 flex-col gap-4', className)}>
@@ -211,7 +232,7 @@ export function DataTable<TData, TValue>({
                       <>
                         <div className="hidden space-x-1 lg:flex">
                           {selectedValues.size > 2 ? (
-                            <span className="ml-2 rounded-sm bg-primary px-1 font-normal text-primary-foreground text-xs">
+                            <span className="ml-2 whitespace-nowrap rounded-sm bg-primary px-1 font-normal text-primary-foreground text-xs">
                               {selectedValues.size} selected
                             </span>
                           ) : (
@@ -220,7 +241,7 @@ export function DataTable<TData, TValue>({
                               .map((option) => (
                                 <span
                                   key={option.value}
-                                  className="ml-2 rounded-sm bg-primary px-1 font-normal text-primary-foreground text-xs"
+                                  className="ml-2 whitespace-nowrap rounded-sm bg-primary px-1 font-normal text-primary-foreground text-xs"
                                 >
                                   {option.label}
                                 </span>
@@ -231,7 +252,7 @@ export function DataTable<TData, TValue>({
                     )}
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-[200px] p-0" align="start">
+                <PopoverContent className="w-auto min-w-[150px] p-0" align="start">
                   <div className="p-2">
                     {filter.options.map((option) => {
                       const isSelected = selectedValues.has(option.value)
@@ -249,7 +270,7 @@ export function DataTable<TData, TValue>({
                               column.setFilterValue(filterValues.length ? filterValues : undefined)
                             }}
                           />
-                          <span className="text-sm font-medium">{option.label}</span>
+                          <span className="text-sm font-medium whitespace-nowrap">{option.label}</span>
                           {facets?.get(option.value) && (
                             <span className="ml-auto flex h-4 w-4 items-center justify-center font-mono text-xs">
                               {facets.get(option.value)}
@@ -579,5 +600,33 @@ export function createExpanderColumn<TData>(): ColumnDef<TData, unknown> {
         </button>
       ) : null
     },
+  }
+}
+
+export function createSelectionColumn<TData>(): ColumnDef<TData, unknown> {
+  return {
+    id: 'select',
+    size: 40,
+    header: ({ table }) => (
+      <Checkbox
+        checked={
+          table.getIsAllPageRowsSelected() ||
+          (table.getIsSomePageRowsSelected() && 'indeterminate')
+        }
+        onCheckedChange={(value) => table.toggleAllPageRowsSelected(!!value)}
+        aria-label="Select all"
+        onClick={(e) => e.stopPropagation()}
+      />
+    ),
+    cell: ({ row }) => (
+      <Checkbox
+        checked={row.getIsSelected()}
+        onCheckedChange={(value) => row.toggleSelected(!!value)}
+        aria-label="Select row"
+        onClick={(e) => e.stopPropagation()}
+      />
+    ),
+    enableSorting: false,
+    enableHiding: false,
   }
 }

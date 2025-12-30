@@ -3,6 +3,7 @@
 
 import type { MergeableStore } from "tinybase";
 import { execOpenWRT, type OpenWRTSSHConfig } from "./ssh-commands";
+import { DeviceService } from "./device-service";
 
 export type ChangeCategory =
   | "network"
@@ -98,7 +99,11 @@ export interface ExecutionLog {
  * Service class for managing the change queue
  */
 export class ChangeQueueService {
-  constructor(private store: MergeableStore) {}
+  private deviceService: DeviceService;
+
+  constructor(private store: MergeableStore) {
+    this.deviceService = new DeviceService(store);
+  }
 
   /**
    * Create a new pending change
@@ -233,39 +238,93 @@ export class ChangeQueueService {
     const logs: ExecutionLog[] = [];
 
     try {
-      const uciCommands = JSON.parse(change.uciCommands) as string[];
+      // Handle package operations specially
+      if (change.category === "packages") {
+        const proposed = JSON.parse(change.proposedValue || "{}");
+        const packageName = proposed.package || proposed.name || change.targetName?.replace(/^(Install|Upgrade|Remove) package /, "");
 
-      // Execute each command
-      for (const cmd of uciCommands) {
-        const startTime = Date.now();
-        const result = await execOpenWRT(sshConfig, cmd);
+        let commands: string[] = [];
+        let timeout = 120000; // 2 minutes for package operations
 
-        const logId = crypto.randomUUID();
-        const log: ExecutionLog = {
-          id: logId,
-          changeId,
-          batchId: "",
-          deviceId: change.deviceId,
-          command: cmd,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          exitCode: result.code,
-          executedAt: startTime,
-          duration: Date.now() - startTime,
-        };
-
-        logs.push(log);
-        this.store.setRow("executionLogs", logId, log as unknown as Record<string, string | number | boolean>);
-
-        if (result.code !== 0) {
-          throw new Error(`Command failed: ${cmd}\n${result.stderr}`);
+        if (change.operation === "install" || change.operation === "create") {
+          commands = ["opkg update", `opkg install ${packageName}`];
+        } else if (change.operation === "upgrade") {
+          commands = [`opkg upgrade ${packageName}`];
+        } else if (change.operation === "remove" || change.operation === "delete") {
+          commands = [`opkg remove ${packageName}`];
         }
-      }
 
-      // Restart affected services
-      const services = JSON.parse(change.requiresServiceRestart) as string[];
-      for (const service of services) {
-        await execOpenWRT(sshConfig, `/etc/init.d/${service} restart`);
+        for (const cmd of commands) {
+          const startTime = Date.now();
+          const result = await execOpenWRT(sshConfig, cmd, timeout);
+
+          const logId = crypto.randomUUID();
+          const log: ExecutionLog = {
+            id: logId,
+            changeId,
+            batchId: "",
+            deviceId: change.deviceId,
+            command: cmd,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.code,
+            executedAt: startTime,
+            duration: Date.now() - startTime,
+          };
+
+          logs.push(log);
+          this.store.setRow("executionLogs", logId, log as unknown as Record<string, string | number | boolean>);
+
+          if (result.code !== 0) {
+            throw new Error(`Command failed: ${cmd}\n${result.stderr}`);
+          }
+        }
+
+        // Refresh packages list after successful operation
+        try {
+          await this.deviceService.refreshPackages({
+            id: change.deviceId,
+            host: device.tailscaleIp as string,
+          });
+        } catch (e) {
+          console.error("[ChangeQueue] Failed to refresh packages after operation:", e);
+          // Don't fail the operation if refresh fails
+        }
+      } else {
+        // Execute UCI commands for non-package changes
+        const uciCommands = JSON.parse(change.uciCommands) as string[];
+
+        for (const cmd of uciCommands) {
+          const startTime = Date.now();
+          const result = await execOpenWRT(sshConfig, cmd);
+
+          const logId = crypto.randomUUID();
+          const log: ExecutionLog = {
+            id: logId,
+            changeId,
+            batchId: "",
+            deviceId: change.deviceId,
+            command: cmd,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.code,
+            executedAt: startTime,
+            duration: Date.now() - startTime,
+          };
+
+          logs.push(log);
+          this.store.setRow("executionLogs", logId, log as unknown as Record<string, string | number | boolean>);
+
+          if (result.code !== 0) {
+            throw new Error(`Command failed: ${cmd}\n${result.stderr}`);
+          }
+        }
+
+        // Restart affected services
+        const services = JSON.parse(change.requiresServiceRestart) as string[];
+        for (const service of services) {
+          await execOpenWRT(sshConfig, `/etc/init.d/${service} restart`);
+        }
       }
 
       // Mark as completed
@@ -579,6 +638,8 @@ export class ChangeQueueService {
       operation = "create";
     } else if (params.changeType.includes("delete") || params.changeType.includes("remove")) {
       operation = "delete";
+    } else if (params.changeType.includes("upgrade")) {
+      operation = "upgrade";
     }
 
     this.store.setRow("pendingChanges", changeId, {
@@ -634,6 +695,23 @@ export class ChangeQueueService {
     return changes
       .sort((a, b) => b.executedAt - a.executedAt)
       .slice(0, limit);
+  }
+
+  /**
+   * Get execution logs for a specific change
+   */
+  getExecutionLogs(changeId: string): ExecutionLog[] {
+    const logIds = this.store.getRowIds("executionLogs");
+    const logs: ExecutionLog[] = [];
+
+    for (const id of logIds) {
+      const log = this.store.getRow("executionLogs", id) as unknown as ExecutionLog;
+      if (log.changeId === changeId) {
+        logs.push(log);
+      }
+    }
+
+    return logs.sort((a, b) => a.executedAt - b.executedAt);
   }
 }
 

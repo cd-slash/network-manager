@@ -365,20 +365,36 @@ export class ExecutionEngine {
     proposed: Record<string, unknown>
   ): Promise<{ success: boolean; output?: string; error?: string }> {
     const packageName = String(proposed.name || proposed.packageName);
+    let result: { success: boolean; output?: string; error?: string };
 
     if (change.operation === "install") {
       const commands = [
         PackageCommands.update,
         PackageCommands.install(packageName),
       ];
-      return this.executeCommandBatch(config, commands, 120000);
+      result = await this.executeCommandBatch(config, commands, 120000);
     } else if (change.operation === "remove") {
-      return this.executeCommand(config, PackageCommands.remove(packageName));
+      result = await this.executeCommand(config, PackageCommands.remove(packageName));
     } else if (change.operation === "upgrade") {
-      return this.executeCommand(config, PackageCommands.upgrade(packageName), 120000);
+      result = await this.executeCommand(config, PackageCommands.upgrade(packageName), 120000);
+    } else {
+      return { success: false, error: `Unknown package operation: ${change.operation}` };
     }
 
-    return { success: false, error: `Unknown package operation: ${change.operation}` };
+    // Refresh packages list after successful operation to update UI
+    if (result.success) {
+      try {
+        const device = this.getDeviceConfig(change.deviceId);
+        if (device) {
+          await this.deviceService.refreshPackages(device);
+        }
+      } catch (e) {
+        console.error("[ExecutionEngine] Failed to refresh packages after operation:", e);
+        // Don't fail the operation if refresh fails
+      }
+    }
+
+    return result;
   }
 
   /**
