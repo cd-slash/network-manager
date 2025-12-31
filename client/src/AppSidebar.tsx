@@ -1,4 +1,4 @@
-import { useRowIds, useStore } from "tinybase/ui-react";
+import { useRowIds, useTable } from "tinybase/ui-react";
 import {
   Home,
   Router,
@@ -134,13 +134,10 @@ const settingsItems = [
 ];
 
 function PendingChangesBadge() {
-  const store = useStore();
   const changeIds = useRowIds("pendingChanges");
+  const changesData = useTable("pendingChanges");
 
-  const pendingCount = changeIds.filter((id) => {
-    const status = store?.getCell("pendingChanges", id, "status");
-    return status === "pending";
-  }).length;
+  const pendingCount = changeIds.filter((id) => changesData[id]?.status === "pending").length;
 
   if (pendingCount === 0) return null;
 
