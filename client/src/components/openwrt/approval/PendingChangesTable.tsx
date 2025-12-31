@@ -31,6 +31,7 @@ interface ChangeRow {
   requiresReboot: boolean;
   createdAt: number;
   uciCommands: string[];
+  sshCommands: string[];
 }
 
 const impactConfig: Record<
@@ -140,10 +141,16 @@ export function PendingChangesTable({ globalActions }: PendingChangesTableProps)
         const device = devicesData[deviceId] || {};
 
         let uciCommands: string[] = [];
+        let sshCommands: string[] = [];
         try {
           uciCommands = JSON.parse((row.uciCommands as string) || "[]");
         } catch {
           uciCommands = [];
+        }
+        try {
+          sshCommands = JSON.parse((row.sshCommands as string) || "[]");
+        } catch {
+          sshCommands = [];
         }
 
         return {
@@ -158,6 +165,7 @@ export function PendingChangesTable({ globalActions }: PendingChangesTableProps)
           requiresReboot: (row.requiresReboot as boolean) || false,
           createdAt: (row.createdAt as number) || 0,
           uciCommands,
+          sshCommands,
         };
       })
       .filter((row): row is ChangeRow => row !== null)
@@ -308,16 +316,29 @@ export function PendingChangesTable({ globalActions }: PendingChangesTableProps)
   const renderSubComponent = ({ row }: { row: { original: ChangeRow } }) => {
     if (!expandedIds.has(row.original.id)) return null;
 
+    const hasUciCommands = row.original.uciCommands.length > 0;
+    const hasSshCommands = row.original.sshCommands.length > 0;
+    const hasAnyCommands = hasUciCommands || hasSshCommands;
+
     return (
       <div className="px-4 py-3 bg-muted/50 border-t">
-        <div className="text-sm font-medium mb-2">UCI Commands to Execute:</div>
+        <div className="text-sm font-medium mb-2">
+          {hasUciCommands ? "UCI Commands" : hasSshCommands ? "SSH Commands" : "Commands"} to Execute:
+        </div>
         <div className="bg-background rounded border p-3 font-mono text-xs space-y-1">
-          {row.original.uciCommands.length > 0 ? (
-            row.original.uciCommands.map((cmd, i) => (
-              <div key={i} className="text-muted-foreground">
-                $ {cmd}
-              </div>
-            ))
+          {hasAnyCommands ? (
+            <>
+              {hasUciCommands && row.original.uciCommands.map((cmd, i) => (
+                <div key={`uci-${i}`} className="text-muted-foreground">
+                  $ {cmd}
+                </div>
+              ))}
+              {hasSshCommands && row.original.sshCommands.map((cmd, i) => (
+                <div key={`ssh-${i}`} className="text-muted-foreground">
+                  $ {cmd}
+                </div>
+              ))}
+            </>
           ) : (
             <div className="text-muted-foreground">No commands</div>
           )}

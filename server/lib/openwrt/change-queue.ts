@@ -4,6 +4,7 @@
 import type { MergeableStore } from "tinybase";
 import { execOpenWRT, type OpenWRTSSHConfig } from "./ssh-commands";
 import { DeviceService } from "./device-service";
+import { deviceCommandQueue } from "./device-command-queue";
 
 export type ChangeCategory =
   | "network"
@@ -158,7 +159,9 @@ export class ChangeQueueService {
   }
 
   /**
-   * Approve a pending change (triggers auto-execution)
+   * Approve a pending change (triggers queued auto-execution)
+   * Commands to the same device are queued and executed sequentially
+   * Commands to different devices can run in parallel
    */
   async approveChange(
     changeId: string,
@@ -179,8 +182,19 @@ export class ChangeQueueService {
       reviewNotes: notes || "",
     });
 
-    // Auto-execute on approval
-    return this.executeChange(changeId);
+    // Enqueue the execution - commands to the same device run sequentially
+    const queueLength = deviceCommandQueue.getQueueLength(change.deviceId);
+    if (queueLength > 0) {
+      console.log(
+        `[ChangeQueue] Queuing change ${changeId} behind ${queueLength} other command(s) for device ${change.deviceId}`
+      );
+    }
+
+    return deviceCommandQueue.enqueue(
+      change.deviceId,
+      changeId,
+      () => this.executeChange(changeId)
+    );
   }
 
   /**
@@ -642,6 +656,44 @@ export class ChangeQueueService {
       operation = "upgrade";
     }
 
+    // Generate SSH commands for package operations
+    let sshCommands: string[] = [];
+    if (category === "packages") {
+      const proposed = params.proposedValue as { package?: string; name?: string; action?: string } | null;
+      const previous = params.previousValue as { name?: string } | null;
+      const packageName = proposed?.package || proposed?.name || previous?.name || "";
+
+      if (packageName) {
+        if (params.changeType === "package_install") {
+          sshCommands = ["opkg update", `opkg install ${packageName}`];
+        } else if (params.changeType === "package_upgrade") {
+          sshCommands = [`opkg upgrade ${packageName}`];
+        } else if (params.changeType === "package_remove") {
+          sshCommands = [`opkg remove ${packageName}`];
+        }
+      }
+    }
+
+    // Generate SSH commands for service operations
+    if (category === "system" && params.tableName === "services") {
+      const proposed = params.proposedValue as { service?: string; name?: string } | null;
+      const serviceName = proposed?.service || proposed?.name || "";
+
+      if (serviceName) {
+        if (params.changeType === "service_start") {
+          sshCommands = [`/etc/init.d/${serviceName} start`];
+        } else if (params.changeType === "service_stop") {
+          sshCommands = [`/etc/init.d/${serviceName} stop`];
+        } else if (params.changeType === "service_restart") {
+          sshCommands = [`/etc/init.d/${serviceName} restart`];
+        } else if (params.changeType === "service_enable") {
+          sshCommands = [`/etc/init.d/${serviceName} enable`];
+        } else if (params.changeType === "service_disable") {
+          sshCommands = [`/etc/init.d/${serviceName} disable`];
+        }
+      }
+    }
+
     this.store.setRow("pendingChanges", changeId, {
       id: changeId,
       deviceId: params.deviceId,
@@ -653,7 +705,7 @@ export class ChangeQueueService {
       previousValue: JSON.stringify(params.previousValue),
       proposedValue: JSON.stringify(params.proposedValue),
       uciCommands: JSON.stringify([]),
-      sshCommands: JSON.stringify([]),
+      sshCommands: JSON.stringify(sshCommands),
       impact: "medium",
       requiresReboot: false,
       requiresServiceRestart: JSON.stringify([]),
