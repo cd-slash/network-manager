@@ -29,14 +29,18 @@ export class DeviceCommandQueue {
       }
 
       const queue = this.queues.get(deviceId)!;
+      const isAlreadyProcessing = this.processing.has(deviceId);
       queue.push({ changeId, execute, resolve });
 
       console.log(
-        `[DeviceCommandQueue] Enqueued change ${changeId} for device ${deviceId}. Queue length: ${queue.length}`
+        `[DeviceCommandQueue] Enqueued change ${changeId} for device ${deviceId}. ` +
+        `Queue length: ${queue.length}, Already processing: ${isAlreadyProcessing}`
       );
 
       // Start processing if not already running for this device
-      this.processQueue(deviceId);
+      if (!isAlreadyProcessing) {
+        this.processQueue(deviceId);
+      }
     });
   }
 
@@ -46,6 +50,7 @@ export class DeviceCommandQueue {
   private async processQueue(deviceId: string): Promise<void> {
     // If already processing this device's queue, return
     if (this.processing.has(deviceId)) {
+      console.log(`[DeviceCommandQueue] Already processing device ${deviceId}, skipping processQueue call`);
       return;
     }
 
@@ -56,16 +61,22 @@ export class DeviceCommandQueue {
 
     // Mark as processing
     this.processing.add(deviceId);
+    console.log(`[DeviceCommandQueue] Started processing queue for device ${deviceId}`);
 
     while (queue.length > 0) {
       const command = queue.shift()!;
 
       console.log(
-        `[DeviceCommandQueue] Executing change ${command.changeId} for device ${deviceId}. Remaining: ${queue.length}`
+        `[DeviceCommandQueue] Starting execution of change ${command.changeId} for device ${deviceId}. Remaining in queue: ${queue.length}`
       );
 
       try {
+        const startTime = Date.now();
         const result = await command.execute();
+        const duration = Date.now() - startTime;
+        console.log(
+          `[DeviceCommandQueue] Completed change ${command.changeId} for device ${deviceId} in ${duration}ms. Success: ${result.success}`
+        );
         command.resolve(result);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : "Unknown error";
@@ -79,6 +90,7 @@ export class DeviceCommandQueue {
 
     // Done processing this device's queue
     this.processing.delete(deviceId);
+    console.log(`[DeviceCommandQueue] Finished processing queue for device ${deviceId}`);
 
     // Clean up empty queue
     if (queue.length === 0) {
