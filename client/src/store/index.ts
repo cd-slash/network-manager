@@ -386,6 +386,17 @@ export const createAppStore = () =>
       completedAt: { type: "number", default: 0 },
       error: { type: "string", default: "" },
     },
+
+    // System Logs
+    systemLogs: {
+      deviceId: { type: "string" },
+      timestamp: { type: "number" },
+      facility: { type: "string", default: "daemon" },
+      severity: { type: "string", default: "info" },
+      hostname: { type: "string", default: "" },
+      process: { type: "string", default: "" },
+      message: { type: "string", default: "" },
+    },
   } as const);
 
 export type AppStore = ReturnType<typeof createAppStore>;

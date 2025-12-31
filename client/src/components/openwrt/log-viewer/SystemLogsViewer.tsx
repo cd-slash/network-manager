@@ -103,6 +103,7 @@ export function SystemLogsViewer({ deviceId }: SystemLogsViewerProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const logs = useCallback((): LogEntry[] => {
+    if (!logsData) return [];
     const result: LogEntry[] = [];
     for (const id of logIds) {
       const log = logsData[id];
@@ -231,12 +232,12 @@ export function SystemLogsViewer({ deviceId }: SystemLogsViewerProps) {
       {/* Toolbar */}
       <div className="flex flex-wrap gap-2 items-center">
         {!deviceId && (
-          <Select value={selectedDeviceId} onValueChange={setSelectedDeviceId}>
+          <Select value={selectedDeviceId || "all"} onValueChange={(v) => setSelectedDeviceId(v === "all" ? "" : v)}>
             <SelectTrigger className="w-[200px]">
               <SelectValue placeholder="Select device" />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="">All Devices</SelectItem>
+              <SelectItem value="all">All Devices</SelectItem>
               {deviceIds.map((id) => (
                 <SelectItem key={id} value={id}>
                   {(devicesData[id]?.hostname as string) || id}
