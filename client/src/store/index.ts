@@ -374,6 +374,18 @@ export const createAppStore = () =>
       createdAt: { type: "number" },
       resolvedAt: { type: "number", default: 0 },
     },
+
+    // Device Command Queue - ensures sequential execution per device
+    deviceCommandQueue: {
+      id: { type: "string" },
+      deviceId: { type: "string" },
+      changeId: { type: "string" },
+      status: { type: "string", default: "queued" }, // queued, processing, completed, failed
+      queuedAt: { type: "number" },
+      startedAt: { type: "number", default: 0 },
+      completedAt: { type: "number", default: 0 },
+      error: { type: "string", default: "" },
+    },
   } as const);
 
 export type AppStore = ReturnType<typeof createAppStore>;

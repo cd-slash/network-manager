@@ -4,7 +4,7 @@
 import type { MergeableStore } from "tinybase";
 import { execOpenWRT, type OpenWRTSSHConfig } from "./ssh-commands";
 import { DeviceService } from "./device-service";
-import { deviceCommandQueue } from "./device-command-queue";
+import { DeviceCommandQueue } from "./device-command-queue";
 
 export type ChangeCategory =
   | "network"
@@ -101,9 +101,11 @@ export interface ExecutionLog {
  */
 export class ChangeQueueService {
   private deviceService: DeviceService;
+  private commandQueue: DeviceCommandQueue;
 
   constructor(private store: MergeableStore) {
     this.deviceService = new DeviceService(store);
+    this.commandQueue = new DeviceCommandQueue(store);
   }
 
   /**
@@ -183,18 +185,25 @@ export class ChangeQueueService {
     });
 
     // Enqueue the execution - commands to the same device run sequentially
-    const queueLength = deviceCommandQueue.getQueueLength(change.deviceId);
+    const queueLength = this.commandQueue.getQueueLength(change.deviceId);
     if (queueLength > 0) {
       console.log(
         `[ChangeQueue] Queuing change ${changeId} behind ${queueLength} other command(s) for device ${change.deviceId}`
       );
     }
 
-    return deviceCommandQueue.enqueue(
+    return this.commandQueue.enqueue(
       change.deviceId,
       changeId,
       () => this.executeChange(changeId)
     );
+  }
+
+  /**
+   * Get the command queue instance for status/monitoring
+   */
+  getCommandQueue(): DeviceCommandQueue {
+    return this.commandQueue;
   }
 
   /**
