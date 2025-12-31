@@ -356,12 +356,11 @@ export function SystemLogsViewer({ deviceId }: SystemLogsViewerProps) {
       </div>
 
       {/* Stats */}
-      <div className="flex gap-4 text-sm text-muted-foreground">
-        <span>{displayedLogs.length} entries</span>
-        {isPaused && (
+      {isPaused && (
+        <div className="flex gap-4 text-sm text-muted-foreground">
           <Badge variant="secondary">Paused</Badge>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Log entries */}
       <ScrollArea
