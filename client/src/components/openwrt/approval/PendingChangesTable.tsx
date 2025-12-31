@@ -348,7 +348,7 @@ export function PendingChangesTable({ globalActions }: PendingChangesTableProps)
   };
 
   return (
-    <div className="space-y-4">
+    <div className="h-full">
       <DataTable
         columns={columns}
         data={data}
