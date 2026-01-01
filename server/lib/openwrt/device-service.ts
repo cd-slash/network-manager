@@ -178,11 +178,15 @@ export class DeviceService {
         if (typeof value === "object" && value !== null && ".type" in value && value[".type"] === "wifi-iface") {
           const ssidConfig = value as Record<string, unknown>;
           const ssidId = `${device.id}_${key}`;
+          const mode = String(ssidConfig.mode || "ap");
+          // For mesh networks, use mesh_id as the ssid name if ssid is empty
+          const ssidName = String(ssidConfig.ssid || "");
+          const meshId = String(ssidConfig.mesh_id || "");
           const ssidRow = {
             deviceId: device.id,
             radioName: String(ssidConfig.device || ""),
-            ssid: String(ssidConfig.ssid || ""),
-            mode: String(ssidConfig.mode || "ap"),
+            ssid: ssidName || (mode === "mesh" ? meshId : ""),
+            mode: mode,
             encryption: String(ssidConfig.encryption || "none"),
             network: String(ssidConfig.network || ""),
             disabled: ssidConfig.disabled === "1",

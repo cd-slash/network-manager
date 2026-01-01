@@ -126,13 +126,18 @@ export function ClientsTable({ deviceId, ssidId, globalActions }: ClientsTablePr
 
         const device = devicesData[devId] || {};
         const ssid = ssidsData[ssId] || {};
+        // Use SSID name, or for mesh networks show "Mesh Network", otherwise fall back to short ID
+        const ssidMode = (ssid.mode as string) || "";
+        const ssidDisplayName = (ssid.ssid as string) ||
+          (ssidMode === "mesh" ? "Mesh Network" : "") ||
+          (ssId ? ssId.split("_").slice(-1)[0] : "Unknown");
 
         return {
           id,
           deviceId: devId,
           deviceHostname: (device.hostname as string) || devId,
           ssidId: ssId,
-          ssidName: (ssid.ssid as string) || ssId,
+          ssidName: ssidDisplayName,
           macAddress: (row.macAddress as string) || "",
           hostname: (row.hostname as string) || "",
           ipAddress: (row.ipAddress as string) || "",

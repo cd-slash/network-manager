@@ -197,6 +197,161 @@ const nodeTypes = {
   switch: SwitchNode,
 };
 
+// Node dimensions for layout
+const NODE_DIMENSIONS: Record<string, { width: number; height: number }> = {
+  internet: { width: 140, height: 50 },
+  device: { width: 200, height: 120 },
+  client: { width: 140, height: 60 },
+  switch: { width: 100, height: 40 },
+};
+
+interface HubSpokeLayoutParams {
+  nodes: Node[];
+  edges: Edge[];
+  gatewayIds: string[];
+  deviceClients: Map<string, string[]>; // deviceId -> clientNodeIds
+}
+
+function getHubSpokeLayout({ nodes, edges, gatewayIds, deviceClients }: HubSpokeLayoutParams) {
+  const positionedNodes: Node[] = [];
+  const nodeById = new Map(nodes.map(n => [n.id, n]));
+
+  // Layout constants
+  const VERTICAL_SPACING = 200;
+  const DEVICE_RADIUS = 300;       // Radius for non-gateway devices around gateway
+  const CLIENT_RADIUS = 180;       // Radius for clients around their parent device
+  const MIN_CLIENT_SPACING = 160;  // Minimum spacing between clients
+
+  // Categorize nodes
+  const internetNode = nodes.find(n => n.type === "internet");
+  const deviceNodes = nodes.filter(n => n.type === "device");
+  const nonGatewayDevices = deviceNodes.filter(n => !gatewayIds.includes(n.id));
+
+  // Center point for the layout
+  const centerX = 400;
+
+  // 1. Position Internet node at the top center
+  if (internetNode) {
+    const dims = NODE_DIMENSIONS.internet;
+    positionedNodes.push({
+      ...internetNode,
+      position: { x: centerX - dims.width / 2, y: 0 },
+    });
+  }
+
+  // 2. Position gateway(s) below Internet - this is the hub
+  const gatewayY = VERTICAL_SPACING;
+  gatewayIds.forEach((gwId, index) => {
+    const node = nodeById.get(gwId);
+    if (node) {
+      const dims = NODE_DIMENSIONS.device;
+      const xOffset = (index - (gatewayIds.length - 1) / 2) * 250;
+      positionedNodes.push({
+        ...node,
+        position: { x: centerX - dims.width / 2 + xOffset, y: gatewayY },
+      });
+    }
+  });
+
+  // 3. Position non-gateway devices in a semicircle below the gateway (spokes)
+  const deviceStartAngle = Math.PI * 0.2;  // Start angle (slightly past horizontal)
+  const deviceEndAngle = Math.PI * 0.8;    // End angle (slightly before horizontal)
+  const deviceY = gatewayY + VERTICAL_SPACING;
+
+  nonGatewayDevices.forEach((node, index) => {
+    const dims = NODE_DIMENSIONS.device;
+    const count = nonGatewayDevices.length;
+
+    if (count === 1) {
+      // Single device goes directly below gateway
+      positionedNodes.push({
+        ...node,
+        position: { x: centerX - dims.width / 2, y: deviceY },
+      });
+    } else {
+      // Spread devices in a semicircle below the gateway
+      const angleRange = deviceEndAngle - deviceStartAngle;
+      const angle = deviceStartAngle + (index / (count - 1)) * angleRange;
+      const x = centerX + Math.cos(angle) * DEVICE_RADIUS - dims.width / 2;
+      const y = gatewayY + Math.sin(angle) * DEVICE_RADIUS;
+
+      positionedNodes.push({
+        ...node,
+        position: { x, y },
+      });
+    }
+  });
+
+  // 4. Position clients around each device in a radial pattern
+  const positionedNodeMap = new Map(positionedNodes.map(n => [n.id, n]));
+
+  deviceClients.forEach((clientNodeIds, deviceId) => {
+    const parentNode = positionedNodeMap.get(deviceId);
+    if (!parentNode || clientNodeIds.length === 0) return;
+
+    const parentDims = NODE_DIMENSIONS.device;
+    const parentCenterX = parentNode.position.x + parentDims.width / 2;
+    const parentCenterY = parentNode.position.y + parentDims.height / 2;
+
+    const clientCount = clientNodeIds.length;
+    const clientDims = NODE_DIMENSIONS.client;
+
+    // Calculate optimal radius based on client count
+    const circumference = clientCount * MIN_CLIENT_SPACING;
+    const calculatedRadius = Math.max(CLIENT_RADIUS, circumference / (2 * Math.PI));
+
+    // Determine angular range based on node type
+    // Gateway clients spread in full circle below, other devices spread outward
+    const isGateway = gatewayIds.includes(deviceId);
+    let startAngle: number, endAngle: number;
+
+    if (isGateway) {
+      // Gateway: clients go below in a semicircle
+      startAngle = Math.PI * 0.25;
+      endAngle = Math.PI * 0.75;
+    } else {
+      // Non-gateway: clients spread outward from center
+      // Find angle from center to this device
+      const angleFromCenter = Math.atan2(
+        parentCenterY - (gatewayY + NODE_DIMENSIONS.device.height / 2),
+        parentCenterX - centerX
+      );
+      // Spread clients in an arc facing away from center
+      startAngle = angleFromCenter - Math.PI / 3;
+      endAngle = angleFromCenter + Math.PI / 3;
+    }
+
+    clientNodeIds.forEach((clientNodeId, index) => {
+      const clientNode = nodeById.get(clientNodeId);
+      if (!clientNode) return;
+
+      let angle: number;
+      if (clientCount === 1) {
+        angle = (startAngle + endAngle) / 2;
+      } else {
+        angle = startAngle + (index / (clientCount - 1)) * (endAngle - startAngle);
+      }
+
+      const x = parentCenterX + Math.cos(angle) * calculatedRadius - clientDims.width / 2;
+      const y = parentCenterY + Math.sin(angle) * calculatedRadius - clientDims.height / 2;
+
+      positionedNodes.push({
+        ...clientNode,
+        position: { x, y },
+      });
+    });
+  });
+
+  console.log("Hub-spoke layout - positioned nodes:", positionedNodes.length);
+  console.log("Gateways:", gatewayIds);
+  console.log("Non-gateway devices:", nonGatewayDevices.map(n => n.id));
+
+  return {
+    nodes: positionedNodes,
+    edges,
+  };
+}
+
 function getEdgeColor(type: string): string {
   switch (type) {
     case "wan":
@@ -225,13 +380,14 @@ export function NetworkTopology() {
 
   const generateTopology = useCallback(() => {
     const newNodes: Node[] = [];
-    const newEdges: Edge[] = [];
+    const layoutEdges: Edge[] = []; // Edges used for dagre layout (hierarchical only)
+    const visualEdges: Edge[] = []; // Additional edges for display (mesh connections)
 
     // Add Internet node at top
     newNodes.push({
       id: "internet",
       type: "internet",
-      position: { x: 400, y: 0 },
+      position: { x: 0, y: 0 }, // Dagre will calculate actual position
       data: {},
     });
 
@@ -309,59 +465,15 @@ export function NetworkTopology() {
       if (firstOnline) gateways.push(firstOnline);
     }
 
-    // Hub-and-spoke layout: Internet at top, gateways in middle, other devices radially around gateways
-    const centerX = 400;
-    const gatewayY = 180;
-    const spokeRadius = 280; // Distance from gateway to spoke devices
-    const spacing = 280;
+    // Track client node IDs per device for layout
+    const deviceClientNodeIds = new Map<string, string[]>();
 
-    // Separate gateway and non-gateway devices
-    const nonGatewayDevices = deviceIds.filter((id) => !gateways.includes(id));
-
-    // Position gateways horizontally centered
-    let gatewayX = centerX - ((gateways.length - 1) * spacing) / 2;
-    const gatewayPositions = new Map<string, { x: number; y: number }>();
-
-    gateways.forEach((id) => {
-      gatewayPositions.set(id, { x: gatewayX, y: gatewayY });
-      gatewayX += spacing;
-    });
-
-    // Position non-gateway devices in a radial/arc pattern below gateways
-    const spokeCount = nonGatewayDevices.length;
-    const spokeStartAngle = Math.PI * 0.3; // Start angle (radians from top)
-    const spokeEndAngle = Math.PI * 0.7; // End angle
-    const spokeAngleRange = spokeEndAngle - spokeStartAngle;
-
-    deviceIds.forEach((id, _index) => {
+    // Create device nodes
+    deviceIds.forEach((id) => {
       const device = devicesData[id] || {};
       const meshInfo = deviceMeshInfo.get(id);
       const isGateway = gateways.includes(id);
       const interfaces = deviceInterfaces.get(id) || [];
-
-      let x: number, y: number;
-      if (isGateway) {
-        const pos = gatewayPositions.get(id)!;
-        x = pos.x;
-        y = pos.y;
-      } else {
-        // Position in arc below gateways
-        const spokeIndex = nonGatewayDevices.indexOf(id);
-        const angle = spokeCount > 1
-          ? spokeStartAngle + (spokeAngleRange * spokeIndex) / (spokeCount - 1)
-          : Math.PI * 0.5; // Center if only one device
-
-        // Use first gateway as hub center, or center if no gateways
-        const hubX = gateways.length > 0
-          ? gatewayPositions.get(gateways[0])!.x
-          : centerX;
-        const hubY = gateways.length > 0
-          ? gatewayPositions.get(gateways[0])!.y
-          : gatewayY;
-
-        x = hubX + Math.cos(angle - Math.PI / 2) * spokeRadius;
-        y = hubY + Math.sin(angle - Math.PI / 2) * spokeRadius + 100;
-      }
 
       const nodeData: DeviceNodeData = {
         id,
@@ -377,7 +489,7 @@ export function NetworkTopology() {
       newNodes.push({
         id,
         type: "device",
-        position: { x, y },
+        position: { x: 0, y: 0 },
         data: nodeData,
         sourcePosition: Position.Bottom,
         targetPosition: Position.Top,
@@ -385,7 +497,7 @@ export function NetworkTopology() {
 
       // Connect gateways to internet
       if (isGateway) {
-        newEdges.push({
+        layoutEdges.push({
           id: `internet-${id}`,
           source: "internet",
           target: id,
@@ -401,59 +513,72 @@ export function NetworkTopology() {
         });
       }
 
-      // Store device position for client positioning
-      const devicePosition = { x, y };
-
-      // Add individual client nodes in hub-and-spoke pattern around this device
+      // Add client nodes for this device
       const clients = deviceClients.get(id) || [];
-      if (clients.length > 0) {
-        const clientRadius = 120; // Distance from device to clients
-        const clientStartAngle = Math.PI * 0.6; // Start below and to the left
-        const clientEndAngle = Math.PI * 1.4; // End below and to the right
-        const clientAngleRange = clientEndAngle - clientStartAngle;
+      const clientNodeIds: string[] = [];
 
-        clients.forEach((client, clientIndex) => {
-          // Calculate angle for this client (evenly distributed)
-          const angle = clients.length > 1
-            ? clientStartAngle + (clientAngleRange * clientIndex) / (clients.length - 1)
-            : Math.PI; // Directly below if only one client
+      clients.forEach((client) => {
+        const clientNodeId = `client-${client.id}`;
+        clientNodeIds.push(clientNodeId);
 
-          // Calculate client position
-          const clientX = devicePosition.x + Math.cos(angle) * clientRadius;
-          const clientY = devicePosition.y + Math.sin(angle) * clientRadius;
+        newNodes.push({
+          id: clientNodeId,
+          type: "client",
+          position: { x: 0, y: 0 },
+          data: {
+            id: client.id,
+            hostname: client.hostname,
+            macAddress: client.macAddress,
+            ipAddress: client.ipAddress,
+            signalStrength: client.signalStrength,
+            deviceId: id,
+          } as ClientNodeData,
+        });
 
-          const clientNodeId = `client-${client.id}`;
+        layoutEdges.push({
+          id: `${id}-${clientNodeId}`,
+          source: id,
+          target: clientNodeId,
+          type: "smoothstep",
+          style: {
+            stroke: getEdgeColor("lan"),
+            strokeWidth: 1,
+            opacity: 0.6,
+          },
+        });
+      });
 
-          newNodes.push({
-            id: clientNodeId,
-            type: "client",
-            position: { x: clientX - 50, y: clientY }, // Offset to center node
-            data: {
-              id: client.id,
-              hostname: client.hostname,
-              macAddress: client.macAddress,
-              ipAddress: client.ipAddress,
-              signalStrength: client.signalStrength,
-              deviceId: id,
-            } as ClientNodeData,
-          });
+      deviceClientNodeIds.set(id, clientNodeIds);
+    });
 
-          newEdges.push({
-            id: `${id}-${clientNodeId}`,
-            source: id,
-            target: clientNodeId,
-            type: "smoothstep",
-            style: {
-              stroke: getEdgeColor("lan"),
-              strokeWidth: 1,
-              opacity: 0.6,
-            },
-          });
+    // Connect non-gateway devices to the primary gateway
+    deviceIds.forEach((id) => {
+      if (gateways.includes(id)) return;
+
+      if (gateways.length > 0) {
+        const device = devicesData[id] || {};
+        const isOnline = device.status === "online";
+        const primaryGateway = gateways[0];
+        const gatewayDevice = devicesData[primaryGateway] || {};
+        const gatewayOnline = gatewayDevice.status === "online";
+
+        layoutEdges.push({
+          id: `lan-${primaryGateway}-${id}`,
+          source: primaryGateway,
+          target: id,
+          type: "smoothstep",
+          animated: isOnline && gatewayOnline,
+          style: {
+            stroke: getEdgeColor("lan"),
+            strokeWidth: 2,
+          },
+          label: "LAN",
+          labelStyle: { fontSize: 10 },
         });
       }
     });
 
-    // Add mesh connections between devices
+    // Add mesh connections between devices (visual only, NOT used for layout)
     const meshConnections = new Set<string>();
     meshNodeIds.forEach((id) => {
       const mesh = meshNodesData[id];
@@ -462,7 +587,6 @@ export function NetworkTopology() {
       const sourceDeviceId = mesh.deviceId as string;
       const neighbors = (mesh.neighbors as number) || 0;
 
-      // Connect to other mesh nodes
       if (neighbors > 0) {
         meshNodeIds.forEach((otherId) => {
           if (id === otherId) return;
@@ -472,12 +596,11 @@ export function NetworkTopology() {
           const targetDeviceId = otherMesh.deviceId as string;
           if (sourceDeviceId === targetDeviceId) return;
 
-          // Create unique connection key
           const connKey = [sourceDeviceId, targetDeviceId].sort().join("-");
           if (meshConnections.has(connKey)) return;
           meshConnections.add(connKey);
 
-          newEdges.push({
+          visualEdges.push({
             id: `mesh-${connKey}`,
             source: sourceDeviceId,
             target: targetDeviceId,
@@ -495,37 +618,17 @@ export function NetworkTopology() {
       }
     });
 
-    // Connect ALL non-gateway devices to the primary gateway (hub-and-spoke pattern)
-    // Even mesh nodes get a LAN connection to show the physical topology
-    deviceIds.forEach((id) => {
-      if (gateways.includes(id)) return;
-
-      // Connect to the primary (first) gateway
-      if (gateways.length > 0) {
-        const device = devicesData[id] || {};
-        const isOnline = device.status === "online";
-        const primaryGateway = gateways[0];
-        const gatewayDevice = devicesData[primaryGateway] || {};
-        const gatewayOnline = gatewayDevice.status === "online";
-
-        newEdges.push({
-          id: `lan-${primaryGateway}-${id}`,
-          source: primaryGateway,
-          target: id,
-          type: "smoothstep",
-          animated: isOnline && gatewayOnline,
-          style: {
-            stroke: getEdgeColor("lan"),
-            strokeWidth: 2,
-          },
-          label: "LAN",
-          labelStyle: { fontSize: 10 },
-        });
-      }
+    // Apply hub-spoke layout
+    const layouted = getHubSpokeLayout({
+      nodes: newNodes,
+      edges: layoutEdges,
+      gatewayIds: gateways,
+      deviceClients: deviceClientNodeIds,
     });
 
-    setNodes(newNodes);
-    setEdges(newEdges);
+    setNodes(layouted.nodes);
+    // Combine layout edges with visual-only edges
+    setEdges([...layouted.edges, ...visualEdges]);
   }, [
     deviceIds,
     devicesData,

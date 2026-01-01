@@ -1672,6 +1672,12 @@ const api = new Elysia()
       networks[id] = store.getRow("wirelessNetworks", id);
     }
 
+    const clientIds = store.getRowIds("wirelessClients");
+    const clients: Record<string, unknown> = {};
+    for (const id of clientIds) {
+      clients[id] = store.getRow("wirelessClients", id);
+    }
+
     const pendingIds = store.getRowIds("pendingChanges");
     const pendingCount = pendingIds.filter(
       (id) => store.getCell("pendingChanges", id, "status") === "pending"
@@ -1684,6 +1690,8 @@ const api = new Elysia()
       wirelessRadios: radios,
       wirelessNetworkCount: networkIds.length,
       wirelessNetworks: networks,
+      wirelessClientCount: clientIds.length,
+      wirelessClients: clients,
       pendingChanges: pendingCount,
       syncStats: wsServer.getStats(),
     };
