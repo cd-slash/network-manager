@@ -115,7 +115,10 @@ export function RoutersTable({ globalActions }: RoutersTableProps) {
         cell: ({ row }) => {
           const RoleIcon = roleConfig[row.original.role]?.icon || Router;
           return (
-            <div className="flex items-center gap-2 min-w-0">
+            <a
+              href={`#device/${row.original.id}`}
+              className="flex items-center gap-2 min-w-0 hover:underline"
+            >
               <RoleIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0">
                 <div className="truncate font-medium">{row.original.hostname}</div>
@@ -123,7 +126,7 @@ export function RoutersTable({ globalActions }: RoutersTableProps) {
                   {row.original.model || "Unknown model"}
                 </div>
               </div>
-            </div>
+            </a>
           );
         },
       },

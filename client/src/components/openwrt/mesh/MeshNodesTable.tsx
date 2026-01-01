@@ -196,6 +196,8 @@ export function MeshNodesTable({ deviceId, globalActions }: MeshNodesTableProps)
         id: "rates",
         header: "Link Rate",
         size: 140,
+        accessorFn: (row) => Math.max(row.rxRate, row.txRate),
+        sortingFn: "basic",
         cell: ({ row }) => (
           <div className="text-sm">
             <div>TX: {formatRate(row.original.txRate)}</div>

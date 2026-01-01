@@ -397,6 +397,22 @@ export const createAppStore = () =>
       process: { type: "string", default: "" },
       message: { type: "string", default: "" },
     },
+
+    // Speed Benchmarks
+    speedBenchmarks: {
+      id: { type: "string" },
+      sourceDeviceId: { type: "string" },
+      targetDeviceId: { type: "string" },
+      status: { type: "string", default: "pending" }, // pending, running, completed, failed
+      downloadSpeed: { type: "number", default: 0 }, // Mbps
+      uploadSpeed: { type: "number", default: 0 }, // Mbps
+      latency: { type: "number", default: 0 }, // ms
+      jitter: { type: "number", default: 0 }, // ms
+      packetLoss: { type: "number", default: 0 }, // percentage
+      startedAt: { type: "number", default: 0 },
+      completedAt: { type: "number", default: 0 },
+      error: { type: "string", default: "" },
+    },
   } as const);
 
 export type AppStore = ReturnType<typeof createAppStore>;

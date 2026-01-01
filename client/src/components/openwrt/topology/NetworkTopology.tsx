@@ -18,6 +18,10 @@ import {
   Globe,
   Waypoints,
   Server,
+  Smartphone,
+  Laptop,
+  Tv,
+  Monitor,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
@@ -116,15 +120,61 @@ function InternetNode() {
   );
 }
 
-function ClientsNode({ data }: { data: { count: number; deviceId: string } }) {
+interface ClientNodeData {
+  id: string;
+  hostname: string;
+  macAddress: string;
+  ipAddress: string;
+  signalStrength: number;
+  deviceId: string;
+}
+
+function getClientIcon(hostname: string) {
+  const lower = hostname.toLowerCase();
+  if (lower.includes("iphone") || lower.includes("android") || lower.includes("pixel") || lower.includes("galaxy")) {
+    return Smartphone;
+  }
+  if (lower.includes("tv") || lower.includes("roku") || lower.includes("fire") || lower.includes("chromecast")) {
+    return Tv;
+  }
+  if (lower.includes("macbook") || lower.includes("laptop") || lower.includes("thinkpad")) {
+    return Laptop;
+  }
+  if (lower.includes("desktop") || lower.includes("imac") || lower.includes("pc")) {
+    return Monitor;
+  }
+  return Wifi;
+}
+
+function getSignalColor(dbm: number): string {
+  if (dbm >= -50) return "text-green-500 border-green-500";
+  if (dbm >= -70) return "text-yellow-500 border-yellow-500";
+  return "text-red-500 border-red-500";
+}
+
+function ClientNode({ data }: { data: ClientNodeData }) {
+  const IconComponent = getClientIcon(data.hostname);
+  const signalColor = data.signalStrength ? getSignalColor(data.signalStrength) : "text-muted-foreground border-muted-foreground/30";
+  const displayName = data.hostname || "Unknown";
+
   return (
-    <div className="px-3 py-2 rounded-lg border border-muted-foreground/30 bg-background shadow">
-      <div className="flex items-center gap-2">
-        <Wifi className="h-4 w-4 text-muted-foreground" />
-        <span className="text-sm">
-          {data.count} {data.count === 1 ? "Client" : "Clients"}
-        </span>
+    <div className={`px-2 py-1.5 rounded-lg border bg-background shadow-sm min-w-[100px] max-w-[140px] ${signalColor.split(" ")[1]}`}>
+      <div className="flex items-center gap-1.5">
+        <IconComponent className={`h-3.5 w-3.5 shrink-0 ${signalColor.split(" ")[0]}`} />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium truncate">{displayName}</div>
+          {data.ipAddress && (
+            <div className="text-[10px] text-muted-foreground font-mono truncate">
+              {data.ipAddress}
+            </div>
+          )}
+        </div>
       </div>
+      {data.signalStrength !== 0 && (
+        <div className="text-[10px] text-muted-foreground mt-0.5">
+          {data.signalStrength} dBm
+        </div>
+      )}
     </div>
   );
 }
@@ -143,7 +193,7 @@ function SwitchNode({ data }: { data: { name: string } }) {
 const nodeTypes = {
   device: DeviceNode,
   internet: InternetNode,
-  clients: ClientsNode,
+  client: ClientNode,
   switch: SwitchNode,
 };
 
@@ -213,26 +263,45 @@ export function NetworkTopology() {
       }
     });
 
-    // Count clients per device
-    const deviceClientCounts = new Map<string, number>();
+    // Group clients by device
+    const deviceClients = new Map<string, Array<{
+      id: string;
+      hostname: string;
+      macAddress: string;
+      ipAddress: string;
+      signalStrength: number;
+    }>>();
     clientIds.forEach((id) => {
       const client = clientsData[id];
-      if (client) {
+      if (client && client.connected !== false) {
         const devId = client.deviceId as string;
-        deviceClientCounts.set(devId, (deviceClientCounts.get(devId) || 0) + 1);
+        if (!deviceClients.has(devId)) {
+          deviceClients.set(devId, []);
+        }
+        deviceClients.get(devId)!.push({
+          id,
+          hostname: (client.hostname as string) || "",
+          macAddress: (client.macAddress as string) || "",
+          ipAddress: (client.ipAddress as string) || "",
+          signalStrength: (client.signalStrength as number) || 0,
+        });
       }
     });
 
-    // Find gateways (devices with WAN or mesh gateways)
+    // Find gateways - check device role field first, then mesh role
     const gateways: string[] = [];
     deviceIds.forEach((id) => {
+      const device = devicesData[id] || {};
+      const deviceRole = device.role as string;
       const meshInfo = deviceMeshInfo.get(id);
-      if (meshInfo?.role === "gate") {
+
+      // Device is a gateway if its role is "gateway" or mesh role is "gate"
+      if (deviceRole === "gateway" || meshInfo?.role === "gate") {
         gateways.push(id);
       }
     });
 
-    // If no mesh gateways, use first online device as gateway
+    // If no gateways found, use first online device as gateway
     if (gateways.length === 0 && deviceIds.length > 0) {
       const firstOnline = deviceIds.find(
         (id) => devicesData[id]?.status === "online"
@@ -240,15 +309,31 @@ export function NetworkTopology() {
       if (firstOnline) gateways.push(firstOnline);
     }
 
-    // Position devices
-    const gatewayY = 150;
-    const nodeY = 350;
-    const spacing = 250;
+    // Hub-and-spoke layout: Internet at top, gateways in middle, other devices radially around gateways
+    const centerX = 400;
+    const gatewayY = 180;
+    const spokeRadius = 280; // Distance from gateway to spoke devices
+    const spacing = 280;
 
-    let gatewayX = 400 - ((gateways.length - 1) * spacing) / 2;
-    let nodeX = 400 - ((deviceIds.length - gateways.length - 1) * spacing) / 2;
+    // Separate gateway and non-gateway devices
+    const nonGatewayDevices = deviceIds.filter((id) => !gateways.includes(id));
 
-    deviceIds.forEach((id) => {
+    // Position gateways horizontally centered
+    let gatewayX = centerX - ((gateways.length - 1) * spacing) / 2;
+    const gatewayPositions = new Map<string, { x: number; y: number }>();
+
+    gateways.forEach((id) => {
+      gatewayPositions.set(id, { x: gatewayX, y: gatewayY });
+      gatewayX += spacing;
+    });
+
+    // Position non-gateway devices in a radial/arc pattern below gateways
+    const spokeCount = nonGatewayDevices.length;
+    const spokeStartAngle = Math.PI * 0.3; // Start angle (radians from top)
+    const spokeEndAngle = Math.PI * 0.7; // End angle
+    const spokeAngleRange = spokeEndAngle - spokeStartAngle;
+
+    deviceIds.forEach((id, _index) => {
       const device = devicesData[id] || {};
       const meshInfo = deviceMeshInfo.get(id);
       const isGateway = gateways.includes(id);
@@ -256,13 +341,26 @@ export function NetworkTopology() {
 
       let x: number, y: number;
       if (isGateway) {
-        x = gatewayX;
-        y = gatewayY;
-        gatewayX += spacing;
+        const pos = gatewayPositions.get(id)!;
+        x = pos.x;
+        y = pos.y;
       } else {
-        x = nodeX;
-        y = nodeY;
-        nodeX += spacing;
+        // Position in arc below gateways
+        const spokeIndex = nonGatewayDevices.indexOf(id);
+        const angle = spokeCount > 1
+          ? spokeStartAngle + (spokeAngleRange * spokeIndex) / (spokeCount - 1)
+          : Math.PI * 0.5; // Center if only one device
+
+        // Use first gateway as hub center, or center if no gateways
+        const hubX = gateways.length > 0
+          ? gatewayPositions.get(gateways[0])!.x
+          : centerX;
+        const hubY = gateways.length > 0
+          ? gatewayPositions.get(gateways[0])!.y
+          : gatewayY;
+
+        x = hubX + Math.cos(angle - Math.PI / 2) * spokeRadius;
+        y = hubY + Math.sin(angle - Math.PI / 2) * spokeRadius + 100;
       }
 
       const nodeData: DeviceNodeData = {
@@ -271,7 +369,7 @@ export function NetworkTopology() {
         model: (device.model as string) || "Unknown",
         tailscaleIp: (device.tailscaleIp as string) || "",
         status: (device.status as string) || "unknown",
-        isMeshNode: !!meshInfo,
+        isMeshNode: !!meshInfo || (device.meshEnabled as boolean) || false,
         isGateway,
         interfaces,
       };
@@ -303,23 +401,54 @@ export function NetworkTopology() {
         });
       }
 
-      // Add client nodes if device has clients
-      const clientCount = deviceClientCounts.get(id) || 0;
-      if (clientCount > 0) {
-        const clientNodeId = `clients-${id}`;
-        newNodes.push({
-          id: clientNodeId,
-          type: "clients",
-          position: { x: x + 80, y: y + 120 },
-          data: { count: clientCount, deviceId: id },
-        });
+      // Store device position for client positioning
+      const devicePosition = { x, y };
 
-        newEdges.push({
-          id: `${id}-${clientNodeId}`,
-          source: id,
-          target: clientNodeId,
-          type: "smoothstep",
-          style: { stroke: getEdgeColor("lan"), strokeWidth: 1.5 },
+      // Add individual client nodes in hub-and-spoke pattern around this device
+      const clients = deviceClients.get(id) || [];
+      if (clients.length > 0) {
+        const clientRadius = 120; // Distance from device to clients
+        const clientStartAngle = Math.PI * 0.6; // Start below and to the left
+        const clientEndAngle = Math.PI * 1.4; // End below and to the right
+        const clientAngleRange = clientEndAngle - clientStartAngle;
+
+        clients.forEach((client, clientIndex) => {
+          // Calculate angle for this client (evenly distributed)
+          const angle = clients.length > 1
+            ? clientStartAngle + (clientAngleRange * clientIndex) / (clients.length - 1)
+            : Math.PI; // Directly below if only one client
+
+          // Calculate client position
+          const clientX = devicePosition.x + Math.cos(angle) * clientRadius;
+          const clientY = devicePosition.y + Math.sin(angle) * clientRadius;
+
+          const clientNodeId = `client-${client.id}`;
+
+          newNodes.push({
+            id: clientNodeId,
+            type: "client",
+            position: { x: clientX - 50, y: clientY }, // Offset to center node
+            data: {
+              id: client.id,
+              hostname: client.hostname,
+              macAddress: client.macAddress,
+              ipAddress: client.ipAddress,
+              signalStrength: client.signalStrength,
+              deviceId: id,
+            } as ClientNodeData,
+          });
+
+          newEdges.push({
+            id: `${id}-${clientNodeId}`,
+            source: id,
+            target: clientNodeId,
+            type: "smoothstep",
+            style: {
+              stroke: getEdgeColor("lan"),
+              strokeWidth: 1,
+              opacity: 0.6,
+            },
+          });
         });
       }
     });
@@ -366,20 +495,31 @@ export function NetworkTopology() {
       }
     });
 
-    // Connect non-gateway devices to gateways if not mesh
+    // Connect ALL non-gateway devices to the primary gateway (hub-and-spoke pattern)
+    // Even mesh nodes get a LAN connection to show the physical topology
     deviceIds.forEach((id) => {
       if (gateways.includes(id)) return;
-      const meshInfo = deviceMeshInfo.get(id);
-      if (meshInfo) return; // Already connected via mesh
 
-      // Find closest gateway
+      // Connect to the primary (first) gateway
       if (gateways.length > 0) {
+        const device = devicesData[id] || {};
+        const isOnline = device.status === "online";
+        const primaryGateway = gateways[0];
+        const gatewayDevice = devicesData[primaryGateway] || {};
+        const gatewayOnline = gatewayDevice.status === "online";
+
         newEdges.push({
-          id: `lan-${gateways[0]}-${id}`,
-          source: gateways[0],
+          id: `lan-${primaryGateway}-${id}`,
+          source: primaryGateway,
           target: id,
           type: "smoothstep",
-          style: { stroke: getEdgeColor("lan"), strokeWidth: 1.5 },
+          animated: isOnline && gatewayOnline,
+          style: {
+            stroke: getEdgeColor("lan"),
+            strokeWidth: 2,
+          },
+          label: "LAN",
+          labelStyle: { fontSize: 10 },
         });
       }
     });
@@ -405,7 +545,12 @@ export function NetworkTopology() {
 
   const minimapNodeColor = useCallback((node: Node) => {
     if (node.type === "internet") return "#3b82f6";
-    if (node.type === "clients") return "#6b7280";
+    if (node.type === "client") {
+      const data = node.data as ClientNodeData;
+      if (data?.signalStrength >= -50) return "#22c55e";
+      if (data?.signalStrength >= -70) return "#eab308";
+      return "#ef4444";
+    }
     const data = node.data as DeviceNodeData;
     if (data?.status === "online") return "#22c55e";
     return "#6b7280";

@@ -1445,6 +1445,211 @@ const api = new Elysia()
   )
 
   // ============================================
+  // Speed Benchmarking
+  // ============================================
+
+  .post(
+    "/api/openwrt/benchmark",
+    async ({ body }) => {
+      const { sourceDeviceId, targetDeviceId } = body;
+
+      // Get device info
+      const sourceDevice = store.getRow("openwrtDevices", sourceDeviceId);
+      const targetDevice = store.getRow("openwrtDevices", targetDeviceId);
+
+      if (!sourceDevice || !targetDevice) {
+        return { success: false, error: "One or both devices not found" };
+      }
+
+      const sourceHost = sourceDevice.tailscaleIp as string;
+      const targetHost = targetDevice.tailscaleIp as string;
+
+      if (!sourceHost || !targetHost) {
+        return { success: false, error: "Device IPs not available" };
+      }
+
+      // Create benchmark record
+      const benchmarkId = `bench-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      store.setRow("speedBenchmarks", benchmarkId, {
+        id: benchmarkId,
+        sourceDeviceId,
+        targetDeviceId,
+        status: "running",
+        downloadSpeed: 0,
+        uploadSpeed: 0,
+        latency: 0,
+        jitter: 0,
+        packetLoss: 0,
+        startedAt: Date.now(),
+        completedAt: 0,
+        error: "",
+      });
+
+      // Run benchmark asynchronously
+      (async () => {
+        try {
+          // First, run ping test to get latency
+          const pingResult = await execOpenWRT(
+            { host: sourceHost, user: "root" },
+            `ping -c 10 -i 0.2 ${targetHost} 2>&1`,
+            30000
+          );
+
+          let latency = 0;
+          let jitter = 0;
+          let packetLoss = 0;
+
+          if (pingResult.code === 0) {
+            // Parse ping output for latency stats
+            const latencyMatch = pingResult.stdout.match(/min\/avg\/max\/mdev = ([\d.]+)\/([\d.]+)\/([\d.]+)\/([\d.]+)/);
+            if (latencyMatch) {
+              latency = parseFloat(latencyMatch[2]); // avg
+              jitter = parseFloat(latencyMatch[4]); // mdev as jitter proxy
+            }
+
+            // Parse packet loss
+            const lossMatch = pingResult.stdout.match(/(\d+)% packet loss/);
+            if (lossMatch) {
+              packetLoss = parseFloat(lossMatch[1]);
+            }
+          }
+
+          // Update with ping results
+          store.setPartialRow("speedBenchmarks", benchmarkId, {
+            latency,
+            jitter,
+            packetLoss,
+          });
+
+          // Check if iperf3 is available
+          const iperfCheck = await execOpenWRT(
+            { host: sourceHost, user: "root" },
+            "which iperf3 2>/dev/null || which iperf 2>/dev/null || echo 'not found'",
+            10000
+          );
+
+          let downloadSpeed = 0;
+          let uploadSpeed = 0;
+
+          if (!iperfCheck.stdout.includes("not found")) {
+            // Start iperf server on target
+            await execOpenWRT(
+              { host: targetHost, user: "root" },
+              "pkill -9 iperf3 2>/dev/null; iperf3 -s -D -1",
+              10000
+            );
+
+            // Wait a bit for server to start
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+
+            // Run download test (from target to source)
+            const downloadResult = await execOpenWRT(
+              { host: sourceHost, user: "root" },
+              `iperf3 -c ${targetHost} -t 5 -J 2>&1`,
+              60000
+            );
+
+            if (downloadResult.code === 0) {
+              try {
+                const data = JSON.parse(downloadResult.stdout);
+                if (data.end?.sum_received?.bits_per_second) {
+                  downloadSpeed = data.end.sum_received.bits_per_second / 1000000; // Convert to Mbps
+                }
+              } catch {
+                // Try parsing non-JSON output
+                const speedMatch = downloadResult.stdout.match(/([\d.]+)\s+Mbits\/sec/);
+                if (speedMatch) {
+                  downloadSpeed = parseFloat(speedMatch[1]);
+                }
+              }
+            }
+
+            // Wait for server to restart
+            await execOpenWRT(
+              { host: targetHost, user: "root" },
+              "pkill -9 iperf3 2>/dev/null; iperf3 -s -D -1",
+              10000
+            );
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+
+            // Run upload test (from source to target)
+            const uploadResult = await execOpenWRT(
+              { host: sourceHost, user: "root" },
+              `iperf3 -c ${targetHost} -t 5 -R -J 2>&1`,
+              60000
+            );
+
+            if (uploadResult.code === 0) {
+              try {
+                const data = JSON.parse(uploadResult.stdout);
+                if (data.end?.sum_sent?.bits_per_second) {
+                  uploadSpeed = data.end.sum_sent.bits_per_second / 1000000; // Convert to Mbps
+                }
+              } catch {
+                const speedMatch = uploadResult.stdout.match(/([\d.]+)\s+Mbits\/sec/);
+                if (speedMatch) {
+                  uploadSpeed = parseFloat(speedMatch[1]);
+                }
+              }
+            }
+
+            // Clean up server
+            await execOpenWRT(
+              { host: targetHost, user: "root" },
+              "pkill -9 iperf3 2>/dev/null",
+              5000
+            );
+          }
+
+          // Update with final results
+          store.setPartialRow("speedBenchmarks", benchmarkId, {
+            status: "completed",
+            downloadSpeed,
+            uploadSpeed,
+            latency,
+            jitter,
+            packetLoss,
+            completedAt: Date.now(),
+          });
+        } catch (err) {
+          store.setPartialRow("speedBenchmarks", benchmarkId, {
+            status: "failed",
+            completedAt: Date.now(),
+            error: err instanceof Error ? err.message : "Unknown error",
+          });
+        }
+      })();
+
+      return { success: true, benchmarkId };
+    },
+    {
+      body: t.Object({
+        sourceDeviceId: t.String(),
+        targetDeviceId: t.String(),
+      }),
+    }
+  )
+
+  .get("/api/openwrt/benchmarks", () => {
+    const benchmarkIds = store.getRowIds("speedBenchmarks");
+    const benchmarks = benchmarkIds.map((id) => store.getRow("speedBenchmarks", id));
+    return { benchmarks: benchmarks.sort((a, b) => (b?.startedAt as number || 0) - (a?.startedAt as number || 0)) };
+  })
+
+  .get("/api/openwrt/benchmarks/:id", ({ params }) => {
+    const benchmark = store.getRow("speedBenchmarks", params.id);
+    if (!benchmark) {
+      return { error: "Benchmark not found" };
+    }
+    return { benchmark };
+  })
+
+  .delete("/api/openwrt/benchmarks/:id", ({ params }) => {
+    store.delRow("speedBenchmarks", params.id);
+    return { success: true };
+  })
+
+  // ============================================
   // Debug Endpoint
   // ============================================
 

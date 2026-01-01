@@ -17,6 +17,8 @@ export const WirelessCommands = {
 
   // Connected Clients
   getAssocList: `for iface in $(iwinfo 2>/dev/null | grep ESSID | cut -d' ' -f1); do echo "=== $iface ==="; iwinfo $iface assoclist; done`,
+  // More detailed station dump with tx/rx bytes
+  getStationDumpAll: `for iface in $(iw dev 2>/dev/null | grep Interface | awk '{print $2}'); do echo "=== $iface ==="; iw dev $iface station dump 2>/dev/null; done`,
   getHostapdClients: (iface: string) =>
     `ubus call hostapd.${iface} get_clients '{}' 2>/dev/null`,
   getStationDump: (iface: string) => `iw dev ${iface} station dump`,
@@ -168,6 +170,10 @@ export function parseIwinfo(output: string): Array<{
 
 /**
  * Parse iwinfo assoclist output for connected clients
+ * Format:
+ *   AA:BB:CC:DD:EE:FF  -65 dBm / -95 dBm (SNR 30)  1000 ms ago
+ *           RX: 866.7 MBit/s                                     4095 Pkts.
+ *           TX: 866.7 MBit/s                                     1272 Pkts.
  */
 export function parseAssocList(output: string): Array<{
   mac: string;
@@ -189,34 +195,201 @@ export function parseAssocList(output: string): Array<{
   }> = [];
 
   const lines = output.split("\n");
+  let currentClient: {
+    mac: string;
+    signal: number;
+    noise: number;
+    rxRate: number;
+    txRate: number;
+    rxPackets: number;
+    txPackets: number;
+  } | null = null;
 
   for (const line of lines) {
+    // Check for MAC address line (starts with MAC, not indented)
     const macMatch = line.match(/^([0-9A-Fa-f:]{17})/);
-    if (!macMatch) continue;
+    if (macMatch) {
+      // Save previous client if exists
+      if (currentClient) {
+        clients.push(currentClient);
+      }
 
-    const client = {
-      mac: macMatch[1].toUpperCase(),
-      signal: 0,
-      noise: 0,
-      rxRate: 0,
-      txRate: 0,
-      rxPackets: 0,
-      txPackets: 0,
-    };
+      currentClient = {
+        mac: macMatch[1].toUpperCase(),
+        signal: 0,
+        noise: 0,
+        rxRate: 0,
+        txRate: 0,
+        rxPackets: 0,
+        txPackets: 0,
+      };
 
-    const signalMatch = line.match(/(-?\d+)\s*dBm/);
-    if (signalMatch) client.signal = parseInt(signalMatch[1], 10);
+      // Parse signal/noise from same line
+      const signalMatch = line.match(/(-?\d+)\s*dBm/);
+      if (signalMatch) currentClient.signal = parseInt(signalMatch[1], 10);
 
-    const noiseMatch = line.match(/\/\s*(-?\d+)\s*dBm/);
-    if (noiseMatch) client.noise = parseInt(noiseMatch[1], 10);
+      const noiseMatch = line.match(/\/\s*(-?\d+)\s*dBm/);
+      if (noiseMatch) currentClient.noise = parseInt(noiseMatch[1], 10);
 
-    const rxMatch = line.match(/RX:\s*([\d.]+)\s*MBit/);
-    if (rxMatch) client.rxRate = parseFloat(rxMatch[1]);
+      continue;
+    }
 
-    const txMatch = line.match(/TX:\s*([\d.]+)\s*MBit/);
-    if (txMatch) client.txRate = parseFloat(txMatch[1]);
+    // Parse RX/TX lines (indented, belong to current client)
+    if (currentClient) {
+      // RX line: "        RX: 866.7 MBit/s                                     4095 Pkts."
+      // Also handle "RX: 866.7 Mbps" or "RX: 866700.0 Kbit/s"
+      const rxMatch = line.match(/RX:\s*([\d.]+)\s*(?:MBit|Mbps|Mbit)/i);
+      if (rxMatch) {
+        currentClient.rxRate = parseFloat(rxMatch[1]);
+        const rxPktsMatch = line.match(/([\d]+)\s*Pkts/i);
+        if (rxPktsMatch) currentClient.rxPackets = parseInt(rxPktsMatch[1], 10);
+      }
 
-    clients.push(client);
+      // TX line: "        TX: 866.7 MBit/s                                     1272 Pkts."
+      const txMatch = line.match(/TX:\s*([\d.]+)\s*(?:MBit|Mbps|Mbit)/i);
+      if (txMatch) {
+        currentClient.txRate = parseFloat(txMatch[1]);
+        const txPktsMatch = line.match(/([\d]+)\s*Pkts/i);
+        if (txPktsMatch) currentClient.txPackets = parseInt(txPktsMatch[1], 10);
+      }
+    }
+  }
+
+  // Don't forget the last client
+  if (currentClient) {
+    clients.push(currentClient);
+  }
+
+  return clients;
+}
+
+/**
+ * Parse iw station dump output for detailed client info
+ */
+export function parseStationDump(output: string): Array<{
+  mac: string;
+  interface: string;
+  signal: number;
+  txBitrate: number;
+  rxBitrate: number;
+  txBytes: number;
+  rxBytes: number;
+  txPackets: number;
+  rxPackets: number;
+  connectedTime: number;
+}> {
+  const clients: Array<{
+    mac: string;
+    interface: string;
+    signal: number;
+    txBitrate: number;
+    rxBitrate: number;
+    txBytes: number;
+    rxBytes: number;
+    txPackets: number;
+    rxPackets: number;
+    connectedTime: number;
+  }> = [];
+
+  let currentInterface = "";
+  let currentClient: {
+    mac: string;
+    interface: string;
+    signal: number;
+    txBitrate: number;
+    rxBitrate: number;
+    txBytes: number;
+    rxBytes: number;
+    txPackets: number;
+    rxPackets: number;
+    connectedTime: number;
+  } | null = null;
+
+  for (const line of output.split("\n")) {
+    // Interface header
+    if (line.includes("===")) {
+      const match = line.match(/===\s*(\S+)\s*===/);
+      if (match) {
+        currentInterface = match[1];
+      }
+      continue;
+    }
+
+    // New station entry
+    const stationMatch = line.match(/^Station\s+([0-9A-Fa-f:]{17})/);
+    if (stationMatch) {
+      if (currentClient) {
+        clients.push(currentClient);
+      }
+      currentClient = {
+        mac: stationMatch[1].toUpperCase(),
+        interface: currentInterface,
+        signal: 0,
+        txBitrate: 0,
+        rxBitrate: 0,
+        txBytes: 0,
+        rxBytes: 0,
+        txPackets: 0,
+        rxPackets: 0,
+        connectedTime: 0,
+      };
+      continue;
+    }
+
+    if (!currentClient) continue;
+
+    // Parse stats - handle various output formats
+    // Signal: "signal:" or "signal avg:" followed by dBm value
+    const signalMatch = line.match(/signal(?:\s+avg)?:\s*(-?\d+)\s*(?:\[-?\d+\])?\s*dBm/i);
+    if (signalMatch) {
+      currentClient.signal = parseInt(signalMatch[1], 10);
+    }
+
+    // TX bitrate: handle MBit/s, Mbps, or Mbit/s formats
+    const txBitrateMatch = line.match(/tx\s+bitrate:\s*([\d.]+)\s*(?:MBit|Mbps|Mbit)/i);
+    if (txBitrateMatch) {
+      currentClient.txBitrate = parseFloat(txBitrateMatch[1]);
+    }
+
+    // RX bitrate: handle MBit/s, Mbps, or Mbit/s formats
+    const rxBitrateMatch = line.match(/rx\s+bitrate:\s*([\d.]+)\s*(?:MBit|Mbps|Mbit)/i);
+    if (rxBitrateMatch) {
+      currentClient.rxBitrate = parseFloat(rxBitrateMatch[1]);
+    }
+
+    // TX bytes
+    const txBytesMatch = line.match(/tx\s+bytes:\s*(\d+)/i);
+    if (txBytesMatch) {
+      currentClient.txBytes = parseInt(txBytesMatch[1], 10);
+    }
+
+    // RX bytes
+    const rxBytesMatch = line.match(/rx\s+bytes:\s*(\d+)/i);
+    if (rxBytesMatch) {
+      currentClient.rxBytes = parseInt(rxBytesMatch[1], 10);
+    }
+
+    // TX packets
+    const txPacketsMatch = line.match(/tx\s+packets:\s*(\d+)/i);
+    if (txPacketsMatch) {
+      currentClient.txPackets = parseInt(txPacketsMatch[1], 10);
+    }
+
+    // RX packets
+    const rxPacketsMatch = line.match(/rx\s+packets:\s*(\d+)/i);
+    if (rxPacketsMatch) {
+      currentClient.rxPackets = parseInt(rxPacketsMatch[1], 10);
+    }
+
+    // Connected time
+    const connectedMatch = line.match(/connected\s+time:\s*(\d+)\s*seconds/i);
+    if (connectedMatch) {
+      currentClient.connectedTime = parseInt(connectedMatch[1], 10);
+    }
+  }
+
+  if (currentClient) {
+    clients.push(currentClient);
   }
 
   return clients;

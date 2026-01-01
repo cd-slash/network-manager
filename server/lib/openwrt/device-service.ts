@@ -12,7 +12,7 @@ import {
 } from "./ssh-commands";
 import { SystemCommands, parseServiceList, parseStorageInfo, parseMemInfo } from "./commands/system";
 import { NetworkCommands, parseNetworkInterfaces } from "./commands/network";
-import { WirelessCommands } from "./commands/wireless";
+import { WirelessCommands, parseAssocList, parseStationDump } from "./commands/wireless";
 import { FirewallCommands } from "./commands/firewall";
 import { DHCPCommands } from "./commands/dhcp";
 import { PackageCommands, parseInstalledPackages, parseAvailablePackages, parseUpgradablePackages } from "./commands/packages";
@@ -140,22 +140,18 @@ export class DeviceService {
    * Refresh wireless radios and clients
    */
   async refreshWireless(device: DeviceConfig): Promise<void> {
-    console.log("[refreshWireless] Starting for device:", device.id);
     const config = this.getSSHConfig(device);
 
     // Get wireless config and status
-    console.log("[refreshWireless] Executing SSH commands...");
     const [configResult, statusResult] = await Promise.all([
       execOpenWRT(config, WirelessCommands.getWirelessConfig),
       execOpenWRT(config, WirelessCommands.getWirelessStatus),
     ]);
-    console.log("[refreshWireless] SSH complete. Config code:", configResult.code, "Status code:", statusResult.code);
 
     if (configResult.code === 0) {
       const parsedConfig = parseUCIShow(configResult.stdout);
       // UCI show returns nested structure: { wireless: { radio0: {...}, radio1: {...} } }
       const wirelessConfig = (parsedConfig.wireless || {}) as Record<string, unknown>;
-      console.log("[refreshWireless] Parsed config keys:", Object.keys(wirelessConfig));
 
       // Process radios and SSIDs
       for (const [key, value] of Object.entries(wirelessConfig)) {
@@ -175,14 +171,7 @@ export class DeviceService {
             band: String(radioConfig.band || ""),
             updatedAt: Date.now(),
           };
-          console.log("[refreshWireless] Setting radio:", radioId, radioRow);
-          try {
-            this.store.setRow("wirelessRadios", radioId, radioRow);
-            console.log("[refreshWireless] Radio set successfully:", radioId);
-          } catch (err) {
-            console.error("[refreshWireless] Failed to set radio:", radioId, err);
-            throw err;
-          }
+          this.store.setRow("wirelessRadios", radioId, radioRow);
         }
 
         // Process SSIDs
@@ -201,47 +190,130 @@ export class DeviceService {
             isolate: ssidConfig.isolate === "1",
             updatedAt: Date.now(),
           };
-          console.log("[refreshWireless] Setting SSID:", ssidId, ssidRow);
-          try {
-            this.store.setRow("wirelessNetworks", ssidId, ssidRow);
-            console.log("[refreshWireless] SSID set successfully:", ssidId);
-          } catch (err) {
-            console.error("[refreshWireless] Failed to set SSID:", ssidId, err);
-            throw err;
+          this.store.setRow("wirelessNetworks", ssidId, ssidRow);
+        }
+      }
+    }
+
+    // Get associated clients with detailed info from multiple sources
+    const [clientsResult, stationDumpResult] = await Promise.all([
+      execOpenWRT(config, WirelessCommands.getAssocList),
+      execOpenWRT(config, WirelessCommands.getStationDumpAll),
+    ]);
+
+    // Parse station dump for detailed traffic stats
+    const stationStats = new Map<string, {
+      txBytes: number;
+      rxBytes: number;
+      txBitrate: number;
+      rxBitrate: number;
+      connectedTime: number;
+    }>();
+    if (stationDumpResult.code === 0) {
+      const stations = parseStationDump(stationDumpResult.stdout);
+      for (const station of stations) {
+        stationStats.set(station.mac, {
+          txBytes: station.txBytes,
+          rxBytes: station.rxBytes,
+          txBitrate: station.txBitrate,
+          rxBitrate: station.rxBitrate,
+          connectedTime: station.connectedTime,
+        });
+      }
+    }
+
+    // Get DHCP leases for hostname lookup
+    const dhcpResult = await execOpenWRT(config, DHCPCommands.getLeases);
+    const dhcpLeases = new Map<string, { hostname: string; ip: string }>();
+    if (dhcpResult.code === 0) {
+      for (const line of dhcpResult.stdout.split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 4) {
+          const mac = parts[1].toUpperCase();
+          dhcpLeases.set(mac, {
+            ip: parts[2],
+            hostname: parts[3] !== "*" ? parts[3] : "",
+          });
+        }
+      }
+    }
+
+    // Get ARP table for additional IP lookups
+    const arpResult = await execOpenWRT(config, "cat /proc/net/arp | tail -n +2");
+    const arpTable = new Map<string, string>();
+    if (arpResult.code === 0) {
+      for (const line of arpResult.stdout.split("\n")) {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length >= 4) {
+          const ip = parts[0];
+          const mac = parts[3].toUpperCase();
+          if (mac && mac !== "00:00:00:00:00:00") {
+            arpTable.set(mac, ip);
           }
         }
       }
     }
 
-    // Get associated clients
-    const clientsResult = await execOpenWRT(config, WirelessCommands.getAssocList);
     if (clientsResult.code === 0) {
-      // Parse client info from iwinfo output
-      const clientLines = clientsResult.stdout.split("\n");
-      let currentInterface = "";
+      // Split output by interface headers (=== wlan0 ===)
+      const interfaceBlocks = clientsResult.stdout.split(/===\s*(\S+)\s*===/).filter(Boolean);
 
-      for (const line of clientLines) {
-        if (line.includes("ESSID:")) {
-          const match = line.match(/^(\S+)\s+ESSID:/);
-          if (match) currentInterface = match[1];
+      // Process interface blocks in pairs: [interfaceName, blockContent, interfaceName, blockContent, ...]
+      for (let i = 0; i < interfaceBlocks.length - 1; i += 2) {
+        const currentInterface = interfaceBlocks[i].trim();
+        const blockContent = interfaceBlocks[i + 1] || "";
+
+        // Find the SSID ID for this interface
+        let currentSsidId = "";
+        const ssidIds = this.store.getRowIds("wirelessNetworks");
+        for (const ssidId of ssidIds) {
+          const ssidRow = this.store.getRow("wirelessNetworks", ssidId);
+          if (ssidRow && ssidRow.deviceId === device.id) {
+            currentSsidId = ssidId;
+            break;
+          }
         }
 
-        const macMatch = line.match(/([0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2}:[0-9A-Fa-f]{2})/);
-        if (macMatch) {
-          const mac = macMatch[1].toUpperCase();
-          const clientId = `${device.id}_${mac.replace(/:/g, "")}`;
+        // Parse all clients in this interface block at once
+        const clients = parseAssocList(blockContent);
+        for (const client of clients) {
+          const clientId = `${device.id}_${client.mac.replace(/:/g, "")}`;
 
-          const signalMatch = line.match(/(-?\d+)\s*dBm/);
-          const signal = signalMatch ? parseInt(signalMatch[1], 10) : 0;
+          // Look up hostname and IP from DHCP leases or ARP table
+          const dhcpInfo = dhcpLeases.get(client.mac);
+          const arpIp = arpTable.get(client.mac);
+
+          const hostname = dhcpInfo?.hostname || "";
+          const ipAddress = dhcpInfo?.ip || arpIp || "";
+
+          // Get additional stats from station dump
+          const stats = stationStats.get(client.mac);
+          const txBytes = stats?.txBytes || 0;
+          const rxBytes = stats?.rxBytes || 0;
+          // Prefer station dump rates if available, fall back to assoclist rates
+          const txRate = stats?.txBitrate || client.txRate || 0;
+          const rxRate = stats?.rxBitrate || client.rxRate || 0;
+          const connectedTime = stats?.connectedTime || 0;
+          // Calculate connectedSince from connectedTime
+          const connectedSince = connectedTime > 0
+            ? Date.now() - (connectedTime * 1000)
+            : Date.now();
 
           this.store.setRow("wirelessClients", clientId, {
             deviceId: device.id,
-            macAddress: mac,
-            interface: currentInterface,
-            signal,
-            noise: -95, // Default noise floor
-            connectedAt: Date.now(),
+            ssidId: currentSsidId,
+            macAddress: client.mac,
+            hostname: hostname,
+            ipAddress: ipAddress,
+            signalStrength: client.signal,
+            noiseLevel: client.noise || -95,
+            txRate: txRate,
+            rxRate: rxRate,
+            connected: true,
+            connectedSince: connectedSince,
             lastSeen: Date.now(),
+            txBytes: txBytes,
+            rxBytes: rxBytes,
           });
         }
       }

@@ -235,6 +235,8 @@ export function ClientsTable({ deviceId, ssidId, globalActions }: ClientsTablePr
         id: "rates",
         header: "Link Rate",
         size: 140,
+        accessorFn: (row) => Math.max(row.rxRate, row.txRate),
+        sortingFn: "basic",
         cell: ({ row }) => (
           <div className="text-sm">
             <div className="flex items-center gap-1">
@@ -252,6 +254,8 @@ export function ClientsTable({ deviceId, ssidId, globalActions }: ClientsTablePr
         id: "traffic",
         header: "Traffic",
         size: 140,
+        accessorFn: (row) => row.rxBytes + row.txBytes,
+        sortingFn: "basic",
         cell: ({ row }) => (
           <div className="text-sm">
             <div className="flex items-center gap-1">

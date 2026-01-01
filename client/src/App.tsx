@@ -13,7 +13,7 @@ import {
 } from "tinybase/ui-react";
 import { Inspector } from "tinybase/ui-react-inspector";
 import { createAppStore } from "@/store";
-import { RoutersTable, DiscoverRouters } from "@/components/openwrt/devices";
+import { RoutersTable, DiscoverRouters, DeviceDetailView } from "@/components/openwrt/devices";
 import { InterfacesTable } from "@/components/openwrt/network";
 import { RadiosTable, SSIDsTable, ClientsTable } from "@/components/openwrt/wireless";
 import { ZonesTable, RulesTable, PortForwardsTable } from "@/components/openwrt/firewall";
@@ -68,7 +68,7 @@ function DashboardView() {
       <div className="mt-6 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground">Routers</CardTitle>
+            <CardTitle className="text-sm font-medium text-muted-foreground">Devices</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">{deviceIds.length}</div>
@@ -302,7 +302,8 @@ function MainView({ syncStatus }: { syncStatus: string }) {
 
   const renderContent = () => {
     // Network
-    if (hash === "#routers") return <RoutersView />;
+    if (hash === "#devices") return <RoutersView />;
+    if (hash.startsWith("#device/")) return <DeviceDetailView deviceId={hash.slice(8)} />;
     if (hash === "#topology") return <TopologyView />;
     if (hash === "#interfaces") return <InterfacesView />;
 
@@ -337,7 +338,8 @@ function MainView({ syncStatus }: { syncStatus: string }) {
 
   const getTitle = () => {
     // Network
-    if (hash === "#routers") return "Routers";
+    if (hash === "#devices") return "Devices";
+    if (hash.startsWith("#device/")) return "Device Details";
     if (hash === "#topology") return "Network Topology";
     if (hash === "#interfaces") return "Interfaces";
 

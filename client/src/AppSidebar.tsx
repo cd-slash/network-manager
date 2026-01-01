@@ -37,8 +37,8 @@ import {
 
 const networkItems = [
   {
-    title: "Routers",
-    url: "#routers",
+    title: "Devices",
+    url: "#devices",
     icon: Router,
   },
   {
