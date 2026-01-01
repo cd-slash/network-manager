@@ -195,6 +195,27 @@ export class DeviceService {
       }
     }
 
+    // Build interface-to-SSID mapping from wireless status
+    // The status JSON contains: { radio0: { interfaces: [{ ifname: "phy0-ap0", section: "default_radio0" }] } }
+    const interfaceToSsidSection = new Map<string, string>();
+    if (statusResult.code === 0) {
+      try {
+        const status = JSON.parse(statusResult.stdout);
+        for (const [_radioName, radioData] of Object.entries(status)) {
+          const radio = radioData as { interfaces?: Array<{ ifname?: string; section?: string }> };
+          if (radio.interfaces) {
+            for (const iface of radio.interfaces) {
+              if (iface.ifname && iface.section) {
+                interfaceToSsidSection.set(iface.ifname, `${device.id}_${iface.section}`);
+              }
+            }
+          }
+        }
+      } catch {
+        // Ignore JSON parse errors
+      }
+    }
+
     // Get associated clients with detailed info from multiple sources
     const [clientsResult, stationDumpResult] = await Promise.all([
       execOpenWRT(config, WirelessCommands.getAssocList),
@@ -263,16 +284,8 @@ export class DeviceService {
         const currentInterface = interfaceBlocks[i].trim();
         const blockContent = interfaceBlocks[i + 1] || "";
 
-        // Find the SSID ID for this interface
-        let currentSsidId = "";
-        const ssidIds = this.store.getRowIds("wirelessNetworks");
-        for (const ssidId of ssidIds) {
-          const ssidRow = this.store.getRow("wirelessNetworks", ssidId);
-          if (ssidRow && ssidRow.deviceId === device.id) {
-            currentSsidId = ssidId;
-            break;
-          }
-        }
+        // Find the SSID ID for this interface using the mapping we built
+        const currentSsidId = interfaceToSsidSection.get(currentInterface) || "";
 
         // Parse all clients in this interface block at once
         const clients = parseAssocList(blockContent);
